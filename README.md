@@ -4,7 +4,7 @@
 
 ```bash
 git clone <URL_репозитория>
-cd my_shop
+cd delivery_service
 ```
 2. создать собственное окружение, используйте .env.example как шаблон:
 
@@ -108,9 +108,9 @@ Soft delete endpoint
 
 ## Структура проекта
 ```
-my_shop/
+delivery_service/
 ├─ manage.py
-├─ my_shop/
+├─ delivery_service/
 │  ├─ settings.py
 │  ├─ urls.py
 │  └─ ...

@@ -3,10 +3,8 @@ version: '3.8'
 services:
   db:
     image: postgres:14.8
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    env_file:
+      - .env
     ports:
       - "65432:5432"
     volumes:
@@ -14,6 +12,8 @@ services:
 
   web:
     build: .
+    env_file:
+      - .env
     command: sh -c "python manage.py migrate && python manage.py load_mock_roles && python manage.py runserver 0.0.0.0:8000"
     volumes:
       - .:/app
@@ -21,12 +21,6 @@ services:
       - "8001:8000"
     depends_on:
       - db
-    environment:
-      DATABASE_NAME: ${DATABASE_NAME}
-      DATABASE_USER: ${DATABASE_USER}
-      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
-      DATABASE_HOST: ${DATABASE_HOST}
-      DATABASE_PORT: ${DATABASE_PORT}
 
 volumes:
   postgres_data:

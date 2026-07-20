@@ -27,8 +27,9 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     # personal data
     first_name = models.CharField(max_length=255)
-    last_name = models.CharField(max_length=255, blank=True, null=True)
-    middle_name = models.CharField(max_length=255, blank=True, null=True)
+    last_name = models.CharField(max_length=255)
+    middle_name = models.CharField(max_length=255)
+    phone_number = models.CharField(max_length=20)
 
     USERNAME_FIELD = 'email'
     objects = CustomUserManager()
