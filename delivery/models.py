@@ -102,13 +102,13 @@ class CDEKTariff(models.Model):
     )
 
     weight_min = models.DecimalField(
-        max_digits=8,
+        max_digits=12,
         decimal_places=3,
         verbose_name="Минимальный вес",
     )
 
     weight_max = models.DecimalField(
-        max_digits=8,
+        max_digits=12,
         decimal_places=3,
         verbose_name="Максимальный вес",
     )

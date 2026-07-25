@@ -8,3 +8,6 @@ bcrypt==4.1.0
 drf-spectacular==0.27.0
 PyJWT>=2.8
 requests>=2.32
+pydantic>=2.0
+celery>=5.3,<6.0
+redis==6.4.0

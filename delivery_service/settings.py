@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 import os
+from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -186,3 +187,27 @@ CDEK_CLIENT_ID = os.environ.get('CDEK_CLIENT_ID')
 CDEK_CLIENT_SECRET = os.environ.get('CDEK_CLIENT_SECRET')
 CDEK_BASE_URL = os.environ.get('CDEK_BASE_URL') # тестовая
 CDEK_TIMEOUT = int(os.getenv("CDEK_TIMEOUT", 30))
+
+
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL")
+
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND")
+
+CELERY_ACCEPT_CONTENT = ["json"]
+
+CELERY_TASK_SERIALIZER = "json"
+
+CELERY_RESULT_SERIALIZER = "json"
+
+CELERY_TIMEZONE = "Europe/Moscow"
+
+
+# CELERY_BEAT
+
+CELERY_BEAT_SCHEDULE = {
+    "sync-cdek-tariffs": {
+        "task": "delivery.tasks.tariffs.sync_cdek_tariffs",
+        "schedule": crontab(hour=3, minute=0),  # каждый день в 03:00
+    },
+}
+

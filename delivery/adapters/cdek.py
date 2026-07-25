@@ -13,6 +13,7 @@ from delivery.adapters.base import DeliveryAdapter
 from delivery.client import CDEKClient
 from delivery.exceptions import CDEKBusinessError
 from delivery.routes.routes_cdek import CALCULATOR_ALL_TARIFFS, CALCULATOR_TARIFF_LIST, CALCULATOR_TARIFF
+from delivery.schemas.tariffs import AvailableTariffsResponseSchema
 
 
 class CDEKAdapter(DeliveryAdapter):
@@ -20,15 +21,15 @@ class CDEKAdapter(DeliveryAdapter):
     def __init__(self):
         self.client = CDEKClient()
 
-    def get_all_tariffs(self):
+    def get_all_tariffs(self) -> AvailableTariffsResponseSchema:
         """
         Получение всех доступных тарифов
         по договору продавца.
         """
 
-        return self.client.get(
-            CALCULATOR_ALL_TARIFFS
-        )
+        response = self.client.get(CALCULATOR_ALL_TARIFFS)
+
+        return AvailableTariffsResponseSchema.model_validate(response) # возвращает Pydantic-модель
 
     def get_available_tariffs(self, data):
         """

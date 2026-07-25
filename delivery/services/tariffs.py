@@ -1,38 +1,41 @@
 from django.core.cache import cache
-
 from delivery.adapters.cdek import CDEKAdapter
 from delivery.models import CDEKTariff
+from delivery.schemas.tariffs import AvailableTariffsResponseSchema
 
 
 class CDEKTariffService:
     CACHE_KEY = "cdek:tariffs"
     CACHE_TIMEOUT = 60 * 60 * 24
 
-    def fetch_tariffs(self):
+    def fetch_tariffs(self) -> AvailableTariffsResponseSchema:
         """ Получение списка тарифов из API СДЭК. """
         adapter = CDEKAdapter()
         return adapter.get_all_tariffs()
 
-    def prepare_tariffs(self, response):
+    def prepare_tariffs(
+            self,
+            response: AvailableTariffsResponseSchema
+    ):
         """ Генератор подготовленных данных для сохранения в БД. """
 
-        for tariff in response["tariff_codes"]:
+        for tariff in response.tariff_codes:
 
-            for mode in tariff["delivery_modes"]:
+            for mode in tariff.delivery_modes:
 
-                if "tariff_code" not in mode:
+                if mode.tariff_code is None:
                     continue
 
                 yield {
-                    "tariff_code": mode["tariff_code"],
-                    "tariff_name": tariff["tariff_name"],
-                    "delivery_mode": int(mode["delivery_mode"]),
-                    "delivery_mode_name": mode["delivery_mode_name"],
-                    "weight_min": tariff["weight_min"],
-                    "weight_max": tariff["weight_max"],
-                    "length_max": tariff["length_max"],
-                    "width_max": tariff["width_max"],
-                    "height_max": tariff["height_max"],
+                    "tariff_code": mode.tariff_code,
+                    "tariff_name": tariff.tariff_name,
+                    "delivery_mode": mode.delivery_mode,
+                    "delivery_mode_name": mode.delivery_mode_name,
+                    "weight_min": tariff.weight_min,
+                    "weight_max": tariff.weight_max,
+                    "length_max": tariff.length_max,
+                    "width_max": tariff.width_max,
+                    "height_max": tariff.height_max,
                     "is_active": True,
                 }
 
@@ -84,3 +87,7 @@ class CDEKTariffService:
         self.deactivate_missing(active_codes) # Деактивация тарифов в БД, отсутствующих в новом ответе API
 
         self.update_cache() # Обновление кэша с актуальными тарифами
+
+        return {
+            "processed": len(tariffs),
+        }
