@@ -33,3 +33,6 @@ frontend/build/
 # Distribution / packaging
 *.egg-info/
 *.egg
+
+# Celerybeat
+celerybeat-schedule
