@@ -2,8 +2,9 @@ from rest_framework import viewsets
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample
 from .models import Shop
-from .serializers import ShopSerializer
+from .serializers import ShopSerializer, ShopDeliverySettingSerializer
 from users.permissions import IsCustomAuthenticated, RolePermission
+from .services import ShopDeliverySettingService
 
 
 class ShopViewSet(viewsets.ModelViewSet):
@@ -89,4 +90,24 @@ class ShopViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         """Delete store by ID"""
         return super().destroy(request, *args, **kwargs)
+
+
+class ShopDeliverySettingViewSet(viewsets.ViewSet):
+
+    def list(self, request):
+        pass
+
+    def create(self, request):
+        serializer = ShopDeliverySettingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        ShopDeliverySettingService().save(
+            shop=request.user.shop,
+            tariff_codes=serializer.validated_data["tariffs"],
+        )
+
+        return Response(status=204)
+
+    def delete(self, request):
+        pass
 

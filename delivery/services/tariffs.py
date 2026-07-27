@@ -91,3 +91,7 @@ class CDEKTariffService:
         return {
             "processed": len(tariffs),
         }
+
+    def get_cached_tariffs(self):
+        """ Получение всех актуальных тарифов по договору продавца из Redis. """
+        return cache.get(self.CACHE_KEY, [])

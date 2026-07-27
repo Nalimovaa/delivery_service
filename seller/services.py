@@ -1,0 +1,2 @@
+class ShopDeliverySettingService():
+    pass
