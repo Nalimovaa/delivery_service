@@ -26,7 +26,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Roles loaded."))
 
         # 2. Creating business elements
-        elements_data = ["User", "Product", "Shop", "Order", "Role", "UserRole", "BusinessElement", "AccessRolesRules"]
+        elements_data = ["User", "Product", "Shop", "ShopDeliverySetting", "Order", "Role", "UserRole", "BusinessElement", "AccessRolesRules"]
         elements = {}
         for name in elements_data:
             element, _ = BusinessElement.objects.get_or_create(name=name)
@@ -61,7 +61,12 @@ class Command(BaseCommand):
              "update_permission": True, "read_all_permission": True},
 
             # Seller — Access only to own stores
-            {"role": "Seller", "element": "Shop", "update_permission": True, "create_permission": True},
+            {"role": "Seller", "element": "Shop",
+             "update_permission": True, "create_permission": True, "read_permission": True},
+
+            # Seller - Access only to own shop delivery settings
+            {"role": "Seller", "element": "ShopDeliverySetting",
+             "read_permission": True, "create_permission": True, "delete_permission": True},
 
             # User — Access own orders, edit own details, browse stores and products
             {"role": "User", "element": "Order", "read_permission": True, "create_permission": True,
@@ -78,7 +83,7 @@ class Command(BaseCommand):
         for rule_data in rules_data:
             role = roles[rule_data.pop("role")]
             element = elements[rule_data.pop("element")]
-            AccessRolesRules.objects.get_or_create(role=role, element=element, defaults=rule_data)
+            AccessRolesRules.objects.update_or_create(role=role, element=element, defaults=rule_data)
 
         self.stdout.write(self.style.SUCCESS("Access rules loaded successfully."))
 

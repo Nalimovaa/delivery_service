@@ -83,28 +83,15 @@ class RolePermission(BasePermission):
             element=element
         )
 
-        if request.method == "POST":
-            # Check if there is at least one rule where create_permission = True
-            if any(getattr(rule, perm, False) for rule in rules):
-                return True
-
-            # If no rule grants the right to create, we prohibit it
-            raise PermissionDenied("No create permission")
-
-        if request.method == "GET":
-
-            # Allow if read_permission or read_all_permission exists
-            if any(
+        # Проверяем, есть ли у пользователя необходимое право
+        if any(
                 getattr(rule, perm, False) or
                 (perm_all and getattr(rule, perm_all, False))
                 for rule in rules
-            ):
-                return True
+        ):
+            return True
 
-            # If you don't have read permissions, we prohibit it
-            raise PermissionDenied("No read permission")
-
-        return True
+        raise PermissionDenied(f"No {perm} permission")
 
     def has_object_permission(self, request, view, obj):
 

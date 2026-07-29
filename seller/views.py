@@ -1,10 +1,12 @@
 from rest_framework import viewsets
 from rest_framework.response import Response
-from drf_spectacular.utils import extend_schema, OpenApiExample
-from .models import Shop
-from .serializers import ShopSerializer, ShopDeliverySettingSerializer
+from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
+from seller.models import Shop
+from seller.serializers import ShopSerializer, ShopDeliverySettingSerializer, ShopDeliverySettingReadSerializer
 from users.permissions import IsCustomAuthenticated, RolePermission
-from .services import ShopDeliverySettingService
+from seller.services import ShopDeliverySettingService
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import action
 
 
 class ShopViewSet(viewsets.ModelViewSet):
@@ -93,21 +95,70 @@ class ShopViewSet(viewsets.ModelViewSet):
 
 
 class ShopDeliverySettingViewSet(viewsets.ViewSet):
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
 
-    def list(self, request):
-        pass
+    business_element = "ShopDeliverySetting"
 
-    def create(self, request):
-        serializer = ShopDeliverySettingSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+    @extend_schema(
+        summary="Получить выбранные тарифы ЛК магазина",
+        responses={
+            200: ShopDeliverySettingReadSerializer(many=True),
+        },
+    )
+    def list(self, request, shop_pk=None):
+        shop = self.get_user_shop(request, shop_pk)
+
+        settings = (
+            ShopDeliverySettingService()
+            .get_shop_tariffs(shop)
+        )
+
+        serializer = ShopDeliverySettingReadSerializer(
+            settings,
+            many=True,
+        )
+
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Сохранить выбранные тарифы в ЛК магазина",
+        request=ShopDeliverySettingSerializer,
+        responses={204: None},
+    )
+    def create(self, request, shop_pk=None):
+        shop = self.get_user_shop(request, shop_pk)
+
+        serializer = ShopDeliverySettingSerializer(
+            data=request.data,
+        )
+        serializer.is_valid(
+            raise_exception=True,
+        )
 
         ShopDeliverySettingService().save(
-            shop=request.user.shop,
+            shop=shop,
             tariff_codes=serializer.validated_data["tariffs"],
         )
 
         return Response(status=204)
 
-    def delete(self, request):
-        pass
+    @extend_schema(
+        summary="Очистить выбранные тарифы ЛК магазина",
+        responses={204: None},
+    )
+    def destroy(self, request, shop_pk=None):
+        shop = self.get_user_shop(request, shop_pk)
 
+        ShopDeliverySettingService().clear(shop)
+
+        return Response(status=204)
+
+    def get_user_shop(self, request, shop_pk):
+        return get_object_or_404(
+            Shop,
+            pk=shop_pk,
+            owner=request.user,
+        )

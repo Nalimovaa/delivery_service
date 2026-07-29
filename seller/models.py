@@ -1,7 +1,7 @@
 from django.db import models
-
-from delivery.models import CDEKTariff
 from users.models import User
+
+
 
 class Shop(models.Model):
     name = models.CharField(max_length=255)
@@ -20,11 +20,17 @@ class ShopDeliverySetting(models.Model):
     )
 
     tariff = models.ForeignKey(
-        CDEKTariff,
+        "delivery.CDEKTariff",
         on_delete=models.PROTECT,
         related_name="shop_settings",
     )
 
-    is_enabled = models.BooleanField(default=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [ # чтобы нельзя было выбрать один и тот же тариф несколько раз
+            models.UniqueConstraint(
+                fields=("shop", "tariff"),
+                name="unique_shop_tariff",
+            )
+        ]
