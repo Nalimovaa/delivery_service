@@ -158,8 +158,8 @@ REST_FRAMEWORK = {
 
 
 SPECTACULAR_SETTINGS = {
-    'TITLE': 'My Shop API',
-    'DESCRIPTION': 'API documentation for My Shop',
+    'TITLE': 'My Delivery Service API',
+    'DESCRIPTION': 'API documentation for My Delivery Service',
     'VERSION': '1.0.0',
     'COMPONENT_SPLIT_REQUEST': True,
     "SECURITY": [{"BearerAuth": []}],
