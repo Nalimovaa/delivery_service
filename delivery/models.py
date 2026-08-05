@@ -1,14 +1,8 @@
 from django.db import models
 
+from delivery.enums import DeliveryType
 from delivery.managers import CDEKTariffManager
-from seller.models import Shop
 
-
-class DeliveryType(models.IntegerChoices):
-    CDEK = 1, "СДЭК"
-    # Добавьте другие типы доставки по мере необходимости:
-    # BOXBERRY = 2, "Boxberry"
-    # POST = 3, "Почта России"
 
 
 class OrderDelivery(models.Model):
@@ -22,7 +16,7 @@ class OrderDelivery(models.Model):
     )
     # Связь с магазином, который осуществляет доставку. Это позволяет отслеживать, какой магазин отвечает за конкретную отправку.
     shop = models.ForeignKey(
-        Shop,
+        "seller.Shop",
         on_delete=models.PROTECT,
         related_name="deliveries",
     )
@@ -142,3 +136,4 @@ class CDEKTariff(models.Model):
 
     def __str__(self):
         return f"{self.tariff_name} ({self.tariff_code})"
+

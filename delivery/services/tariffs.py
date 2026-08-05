@@ -4,6 +4,7 @@ from delivery.models import CDEKTariff
 from delivery.schemas.tariffs import AvailableTariffsResponseSchema
 
 
+
 class CDEKTariffService:
     CACHE_KEY = "cdek:tariffs"
     CACHE_TIMEOUT = 60 * 60 * 24

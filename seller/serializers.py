@@ -5,9 +5,10 @@ from delivery.serializers import CDEKTariffSerializer
 
 
 class ShopSerializer(serializers.ModelSerializer):
+    """Сериалайзрк для CRUD магазина"""
     class Meta:
         model = Shop
-        fields = ['id', 'name', 'owner', 'legal_info']
+        fields = ['id', 'name', 'owner', 'legal_info',  "location_from", "carrier",]
         read_only_fields = ["owner"]
 
 

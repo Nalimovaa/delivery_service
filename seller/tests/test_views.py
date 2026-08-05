@@ -6,7 +6,7 @@ from unittest.mock import patch
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from delivery.models import CDEKTariff
+from delivery.models import CDEKTariff, DeliveryType
 from seller.models import Shop, ShopDeliverySetting
 from users.models import User
 
@@ -28,9 +28,15 @@ class TestShopDeliverySettingView(APITestCase):
             email="seller@test.com",
         )
 
+        self.client.force_authenticate(user=self.user)
+        self.client.credentials(
+            HTTP_AUTHORIZATION="Bearer test-token"
+        )
+
         self.shop = Shop.objects.create(
             owner=self.user,
             name="Shop",
+            carrier=DeliveryType.CDEK,
         )
 
         self.tariff = CDEKTariff.objects.create(
@@ -47,11 +53,11 @@ class TestShopDeliverySettingView(APITestCase):
         )
 
     @patch(
-        "users.permissions.IsCustomAuthenticated.has_permission",
+        "users.permissions.RolePermission.has_permission",
         return_value=True,
     )
     @patch(
-        "users.permissions.RolePermission.has_permission",
+        "users.permissions.RolePermission.has_object_permission",
         return_value=True,
     )
     @patch(
@@ -85,11 +91,11 @@ class TestShopDeliverySettingView(APITestCase):
         )
 
     @patch(
-        "users.permissions.IsCustomAuthenticated.has_permission",
+        "users.permissions.RolePermission.has_permission",
         return_value=True,
     )
     @patch(
-        "users.permissions.RolePermission.has_permission",
+        "users.permissions.RolePermission.has_object_permission",
         return_value=True,
     )
     @patch(
@@ -125,11 +131,11 @@ class TestShopDeliverySettingView(APITestCase):
         )
 
     @patch(
-        "users.permissions.IsCustomAuthenticated.has_permission",
+        "users.permissions.RolePermission.has_permission",
         return_value=True,
     )
     @patch(
-        "users.permissions.RolePermission.has_permission",
+        "users.permissions.RolePermission.has_object_permission",
         return_value=True,
     )
     @patch(
@@ -166,3 +172,218 @@ class TestShopDeliverySettingView(APITestCase):
             ShopDeliverySetting.objects.count(),
             0,
         )
+
+
+class TestShopViewSet(APITestCase):
+    """
+    Тестирование API управления магазинами.
+
+    Проверяются:
+    - создание магазина;
+    - получение списка магазинов;
+    - получение магазина по ID;
+    - изменение службы доставки;
+    - удаление магазина.
+
+    В тестах DeliveryFactory заменяется mock-объектом,
+    так как проверяется только взаимодействие ViewSet
+    с фабрикой, а не сама логика служб доставки.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create(
+            email="seller@test.com",
+        )
+
+        self.client.force_authenticate(user=self.user)
+        self.client.credentials(
+            HTTP_AUTHORIZATION="Bearer test-token"
+        )
+
+        self.shop = Shop.objects.create(
+            owner=self.user,
+            name="Test shop",
+            carrier=DeliveryType.CDEK,
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    @patch(
+        "seller.views.DeliveryFactory.initialize",
+    )
+    def test_create_shop_with_delivery_initialize(
+        self,
+        mocked_initialize,
+        *_,
+    ):
+        """
+        Проверяет создание магазина.
+
+        После создания магазина должна быть вызвана
+        DeliveryFactory.initialize().
+        """
+
+        response = self.client.post(
+            "/api/shops/",
+            {
+                "name": "New shop",
+                "carrier": DeliveryType.CDEK,
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_201_CREATED,
+        )
+
+        mocked_initialize.assert_called_once()
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_list_shops(
+        self,
+        *_,
+    ):
+        """
+        Проверяет получение списка магазинов.
+        """
+
+        response = self.client.get(
+            "/api/shops/",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        self.assertEqual(
+            len(response.data),
+            1,
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_retrieve_shop(
+        self,
+        *_,
+    ):
+        """
+        Проверяет получение магазина по ID.
+        """
+
+        response = self.client.get(
+            f"/api/shops/{self.shop.id}/",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    @patch(
+        "seller.views.DeliveryFactory.initialize",
+    )
+    @patch(
+        "seller.views.DeliveryFactory.cleanup",
+    )
+    def test_update_shop_carrier(
+        self,
+        mocked_cleanup,
+        mocked_initialize,
+        *_,
+    ):
+        """
+        Проверяет изменение службы доставки.
+
+        Если carrier изменился:
+        - вызывается cleanup старой службы;
+        - вызывается initialize новой службы.
+        """
+
+        response = self.client.patch(
+            f"/api/shops/{self.shop.id}/",
+            {
+                "carrier": DeliveryType.BOXBERRY,
+            },
+            format="json",
+        )
+
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        mocked_cleanup.assert_called_once()
+
+        mocked_initialize.assert_called_once()
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    @patch(
+        "seller.views.DeliveryFactory.cleanup",
+    )
+    def test_delete_shop(
+        self,
+        mocked_cleanup,
+        *_,
+    ):
+        """
+        Проверяет удаление магазина.
+
+        Перед удалением должна вызываться
+        DeliveryFactory.cleanup().
+        """
+
+        response = self.client.delete(
+            f"/api/shops/{self.shop.id}/",
+        )
+
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_204_NO_CONTENT,
+        )
+
+        self.assertFalse(
+            Shop.objects.filter(
+                id=self.shop.id
+            ).exists()
+        )
+
+
+        mocked_cleanup.assert_called_once()

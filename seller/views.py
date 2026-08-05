@@ -1,12 +1,14 @@
 from rest_framework import viewsets
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
+
+from delivery.factories.delivery import DeliveryFactory
 from seller.models import Shop
 from seller.serializers import ShopSerializer, ShopDeliverySettingSerializer, ShopDeliverySettingReadSerializer
 from users.permissions import IsCustomAuthenticated, RolePermission
 from seller.services import ShopDeliverySettingService
 from django.shortcuts import get_object_or_404
-from rest_framework.decorators import action
+from rest_framework import status
 
 
 class ShopViewSet(viewsets.ModelViewSet):
@@ -33,7 +35,8 @@ class ShopViewSet(viewsets.ModelViewSet):
         return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
-        serializer.save(owner=self.request.user)
+        shop = serializer.save(owner=self.request.user)
+        DeliveryFactory.initialize(shop)
 
     @extend_schema(
         summary="Список магазинов",
@@ -76,8 +79,25 @@ class ShopViewSet(viewsets.ModelViewSet):
         }
     )
     def partial_update(self, request, *args, **kwargs):
-        """ Partial store update by ID """
-        return super().partial_update(request, *args, **kwargs)
+        """Partial store update by ID."""
+
+        shop = self.get_object()
+        old_carrier = shop.carrier
+
+        serializer = self.get_serializer(
+            shop,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+
+        shop = serializer.save()
+
+        if old_carrier != shop.carrier:
+            DeliveryFactory.cleanup(shop, old_carrier)
+            DeliveryFactory.initialize(shop)
+
+        return Response(serializer.data)
 
     @extend_schema(
         summary="Удалить магазин",
@@ -90,8 +110,15 @@ class ShopViewSet(viewsets.ModelViewSet):
         }
     )
     def destroy(self, request, *args, **kwargs):
-        """Delete store by ID"""
-        return super().destroy(request, *args, **kwargs)
+        """Delete store by ID."""
+
+        shop = self.get_object()
+
+        DeliveryFactory.cleanup(shop)
+
+        shop.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ShopDeliverySettingViewSet(viewsets.ViewSet):

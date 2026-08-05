@@ -1,53 +1,82 @@
 """
-python manage.py test delivery.tests.test_tasks
+docker exec -it delivery_service-web-1 python manage.py test delivery.tests.test_tasks
 
 Тест Celery-задачи синхронизации тарифов CDEK.
 
-Проверяется корректная связь между:
-Celery Task -> CDEKTariffService -> sync_cdek_tariffs()
+Проверяются два сценария:
 
-Реальный сервис заменяется mock-объектом,
-чтобы тестировать только поведение Celery-задачи
-без обращения к базе данных и внешнему API СДЭК.
+1. Если существует хотя бы один магазин с доставкой CDEK:
+   - создается экземпляр CDEKTariffService;
+   - вызывается sync_cdek_tariffs();
+   - результат возвращается вызывающему коду.
 
-Проверяется:
-- создание экземпляра CDEKTariffService;
-- вызов метода синхронизации;
-- возврат результата выполнения задачи.
+2. Если магазинов с доставкой CDEK нет:
+   - синхронизация не запускается;
+   - сервис CDEKTariffService не создается;
+   - задача возвращает статус skipped.
 """
 
 from unittest.mock import patch
 
 from django.test import TestCase
 
+from delivery.models import DeliveryType
 from delivery.tasks.tariffs import sync_cdek_tariffs
+from seller.models import Shop
+from users.models import User
 
 
 class TariffTaskTest(TestCase):
 
-    @patch(
-        "delivery.tasks.tariffs.CDEKTariffService"
-    )
+    @patch("delivery.tasks.tariffs.CDEKTariffService")
     def test_sync_cdek_tariffs(self, mock_service):
         """
-            Проверка выполнения Celery-задачи.
-
-            Celery-задача вызывает сервис синхронизации тарифов
-            и возвращает результат обработки.
-
-            Проверяется:
-                - сервис создается;
-                - метод sync_cdek_tariffs вызывается один раз;
-                - количество обработанных тарифов передается обратно.
+        Проверяет выполнение Celery-задачи при наличии
+        хотя бы одного магазина с доставкой CDEK.
         """
 
+        user = User.objects.create(
+            email="seller@test.com",
+        )
+
+        Shop.objects.create(
+            owner=user,
+            name="Test shop",
+            carrier=DeliveryType.CDEK,
+        )
+
         mock_service.return_value.sync_cdek_tariffs.return_value = {
-            "processed": 170
+            "processed": 170,
         }
 
         result = sync_cdek_tariffs()
 
-        self.assertEqual(result["processed"], 170)
+        self.assertEqual(
+            result["processed"],
+            170,
+        )
 
         mock_service.assert_called_once()
         mock_service.return_value.sync_cdek_tariffs.assert_called_once()
+
+    @patch("delivery.tasks.tariffs.CDEKTariffService")
+    def test_sync_cdek_tariffs_without_cdek_shops(
+        self,
+        mock_service,
+    ):
+        """
+        Проверяет, что синхронизация не запускается,
+        если магазинов с доставкой CDEK нет.
+        """
+
+        result = sync_cdek_tariffs()
+
+        self.assertEqual(
+            result,
+            {
+                "processed": 0,
+                "status": "skipped",
+            },
+        )
+
+        mock_service.assert_not_called()
