@@ -1,7 +1,8 @@
 from django.db import transaction
 from delivery.models import CDEKTariff
 from delivery.services.tariffs import CDEKTariffService
-from seller.models import ShopDeliverySetting
+from seller.models import ShopDeliverySetting, Shop
+from users.models import Role, UserRole
 
 
 class ShopDeliverySettingService:
@@ -64,3 +65,40 @@ class ShopDeliverySettingService:
         ShopDeliverySetting.objects.filter(
             shop=shop
         ).delete()
+
+
+class SellerService:
+    """Service for managing Seller role."""
+
+    @staticmethod
+    def assign_role(user):
+        """Assign Seller role to the user."""
+        seller_role, _ = Role.objects.get_or_create(
+            name="Seller",
+        )
+
+        UserRole.objects.get_or_create(
+            user=user,
+            role=seller_role,
+        )
+
+    @staticmethod
+    def remove_role_if_no_shops(user):
+        """Remove Seller role if the user no longer owns any shops."""
+
+        has_shops = Shop.objects.filter(
+            owner=user,
+        ).exists()
+
+        if has_shops:
+            return
+
+        seller_role = Role.objects.filter(
+            name="Seller",
+        ).first()
+
+        if seller_role:
+            UserRole.objects.filter(
+                user=user,
+                role=seller_role,
+            ).delete()

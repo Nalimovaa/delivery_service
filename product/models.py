@@ -34,7 +34,7 @@ class UniqueProduct(models.Model):
     width = models.PositiveIntegerField()  # ширина (в сантиметрах)
     weight = models.PositiveIntegerField()  # Вес (за единицу товара, в граммах)
 
-    stock = models.PositiveIntegerField(default=0) # остаток товара на складе
+    stock = models.PositiveIntegerField(default=0) # Текущее доступное количество конкретного варианта товара на складе продавца.
 
     def __str__(self):
         return (

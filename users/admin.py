@@ -13,8 +13,13 @@ class UserAdmin(UserAdmin):
         "email",
         "first_name",
         "last_name",
+        "middle_name",
         "is_staff",
         "is_active",
+        "phone_number",
+        "date_joined",
+        "is_superuser",
+        "location_to",
     )
 
     list_filter = (
@@ -29,6 +34,7 @@ class UserAdmin(UserAdmin):
         "last_name",
         "middle_name",
         "phone_number",
+        "location_to",
     )
 
     fieldsets = (

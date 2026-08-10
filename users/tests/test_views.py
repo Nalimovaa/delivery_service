@@ -51,6 +51,8 @@ class TestUserViewSet(APITestCase):
             first_name="User",
             last_name="Test",
             middle_name="Middle",
+            phone_number="+1234567890",
+            location_to="Test City",
         )
 
         UserRole.objects.create(
@@ -87,6 +89,8 @@ class TestUserViewSet(APITestCase):
                 "first_name": "New",
                 "last_name": "User",
                 "middle_name": "Middle",
+                "phone_number": "+1234567890",
+                "location_to": "Test City",
                 "password": "12345678",
                 "password_repeat": "12345678",
             },
@@ -244,6 +248,8 @@ class TestUserViewSet(APITestCase):
             first_name="Another",
             last_name="User",
             middle_name="Middle",
+            phone_number="+1234567890",
+        location_to="Test City",
         )
 
         response = self.client.get(

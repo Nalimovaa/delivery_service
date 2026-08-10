@@ -30,6 +30,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     last_name = models.CharField(max_length=255)
     middle_name = models.CharField(max_length=255)
     phone_number = models.CharField(max_length=20)
+    location_to = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name="Город получателя",
+    )
 
     USERNAME_FIELD = 'email'
     objects = CustomUserManager()

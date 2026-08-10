@@ -9,6 +9,8 @@ class ShopAdmin(admin.ModelAdmin):
         "id",
         "name",
         "owner",
+        "location_from",
+        "carrier",
     )
 
     search_fields = (
@@ -16,6 +18,8 @@ class ShopAdmin(admin.ModelAdmin):
         "owner__email",
         "owner__first_name",
         "owner__last_name",
+        "location_from",
+        "carrier",
     )
 
     autocomplete_fields = (

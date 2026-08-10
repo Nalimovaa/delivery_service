@@ -1,3 +1,5 @@
+# python manage.py load_mock_roles
+
 from django.core.management.base import BaseCommand
 from core.models import BusinessElement, AccessRolesRules
 from users.models import Role
@@ -11,9 +13,7 @@ class Command(BaseCommand):
         # 1. Creating roles
         roles_data = [
             ("Admin", "Full access to the system"),
-            ("Manager", "Access to create and edit products related to the seller's store "
-                        "and view and edit user orders related to that store"),
-            ("Seller", "Access only to own stores"),
+            ("Seller", "Access to own store, products, orders and delivery settings"),
             ("User", "Access own orders, edit own details, browse stores and products"),
             ("Guest", "Viewing public information only"),
         ]
@@ -26,7 +26,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Roles loaded."))
 
         # 2. Creating business elements
-        elements_data = ["User", "Product", "Shop", "ShopDeliverySetting", "Order", "Role", "UserRole", "BusinessElement", "AccessRolesRules"]
+        elements_data = ["User", "Product", "UniqueProduct", "Shop", "ShopDeliverySetting", "Order", "Role", "UserRole", "BusinessElement", "AccessRolesRules"]
         elements = {}
         for name in elements_data:
             element, _ = BusinessElement.objects.get_or_create(name=name)
@@ -41,6 +41,14 @@ class Command(BaseCommand):
              "create_permission": True, "delete_all_permission": True},
             {"role": "Admin", "element": "Product", "read_all_permission": True, "update_all_permission": True,
              "create_permission": True, "delete_all_permission": True},
+            {
+                "role": "Admin",
+                "element": "UniqueProduct",
+                "read_all_permission": True,
+                "update_all_permission": True,
+                "create_permission": True,
+                "delete_all_permission": True,
+            },
             {"role": "Admin", "element": "Shop", "read_all_permission": True, "update_all_permission": True,
              "create_permission": True, "delete_all_permission": True},
             {"role": "Admin", "element": "Order", "read_all_permission": True, "update_all_permission": True,
@@ -54,17 +62,20 @@ class Command(BaseCommand):
             {"role": "Admin", "element": "UserRole", "read_all_permission": True, "update_all_permission": True,
              "create_permission": True, "delete_all_permission": True},
 
-            # Manager — Access to create and edit products related to the seller's store and view
-            # and edit user orders related to that store
-            {"role": "Manager", "element": "Product", "update_permission": True, "create_permission": True},
-            {"role": "Manager", "element": "Order", "read_permission": True,
-             "update_permission": True, "read_all_permission": True},
-
-            # Seller — Access only to own stores
+            # Seller — Access to own stores, to create and edit products related to the seller's store and view,
+            # edit user orders related to that store and access only to own shop delivery settings
             {"role": "Seller", "element": "Shop",
              "update_permission": True, "create_permission": True, "read_permission": True},
-
-            # Seller - Access only to own shop delivery settings
+            {"role": "Seller", "element": "Product", "update_permission": True, "create_permission": True, "read_permission": True},
+            {
+                "role": "Seller",
+                "element": "UniqueProduct",
+                "update_permission": True,
+                "create_permission": True,
+                "read_permission": True,
+                "delete_permission": True,
+            },
+            {"role": "Seller", "element": "Order", "read_permission": True, "update_permission": True},
             {"role": "Seller", "element": "ShopDeliverySetting",
              "read_permission": True, "create_permission": True, "delete_permission": True},
 
@@ -74,9 +85,19 @@ class Command(BaseCommand):
             {"role": "User", "element": "User", "read_permission": True, "update_permission": True},
             {"role": "User", "element": "Shop", "read_all_permission": True},
             {"role": "User", "element": "Product", "read_all_permission": True},
+            {
+                "role": "User",
+                "element": "UniqueProduct",
+                "read_all_permission": True,
+            },
 
             # Guest — Viewing public information only
             {"role": "Guest", "element": "Product", "read_all_permission": True},
+            {
+                "role": "Guest",
+                "element": "UniqueProduct",
+                "read_all_permission": True,
+            },
             {"role": "Guest", "element": "Shop", "read_all_permission": True},
         ]
 

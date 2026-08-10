@@ -1,22 +1,27 @@
 """ docker exec -it delivery_service-web-1 python manage.py test seller.tests.test_services """
 
+from decimal import Decimal
 from unittest.mock import patch
+
 from django.test import TestCase
+
+from delivery.enums import DeliveryType
 from delivery.models import CDEKTariff
 from seller.models import Shop, ShopDeliverySetting
-from seller.services import ShopDeliverySettingService
-from users.models import User
-from decimal import Decimal
+from seller.services import ShopDeliverySettingService, SellerService
+from users.models import User, Role, UserRole
 
 
 class TestShopDeliverySettingService(TestCase):
-    """ Тесты сервиса ShopDeliverySettingService.
+    """
+    Тесты сервиса ShopDeliverySettingService.
 
-        Проверяется:
-        - сохранение выбранных тарифов магазина;
-        - проверка доступности тарифов перед сохранением;
-        - получение выбранных тарифов магазина;
-        - удаление сохраненных настроек магазина. """
+    Проверяется:
+    - сохранение выбранных тарифов магазина;
+    - проверка доступности тарифов перед сохранением;
+    - получение выбранных тарифов магазина;
+    - удаление сохраненных настроек магазина.
+    """
 
     def setUp(self):
         self.user = User.objects.create(
@@ -26,6 +31,7 @@ class TestShopDeliverySettingService(TestCase):
         self.shop = Shop.objects.create(
             owner=self.user,
             name="Shop",
+            carrier=DeliveryType.CDEK,
         )
 
         self.tariff = CDEKTariff.objects.create(
@@ -85,9 +91,14 @@ class TestShopDeliverySettingService(TestCase):
             tariff=self.tariff,
         )
 
-        tariffs = self.service.get_shop_tariffs(self.shop)
+        tariffs = self.service.get_shop_tariffs(
+            self.shop,
+        )
 
-        self.assertEqual(tariffs.count(), 1)
+        self.assertEqual(
+            tariffs.count(),
+            1,
+        )
 
     def test_clear(self):
         """Проверяет удаление всех сохраненных тарифов магазина."""
@@ -97,9 +108,75 @@ class TestShopDeliverySettingService(TestCase):
             tariff=self.tariff,
         )
 
-        self.service.clear(self.shop)
+        self.service.clear(
+            self.shop,
+        )
 
         self.assertEqual(
             ShopDeliverySetting.objects.count(),
             0,
+        )
+
+
+class TestSellerService(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create(
+            email="seller@test.com",
+        )
+
+        self.role = Role.objects.create(
+            name="Seller",
+        )
+
+    def test_assign_role(self):
+        SellerService.assign_role(
+            self.user,
+        )
+
+        self.assertTrue(
+            UserRole.objects.filter(
+                user=self.user,
+                role=self.role,
+            ).exists()
+        )
+
+    def test_remove_role_if_no_shops(self):
+        UserRole.objects.create(
+            user=self.user,
+            role=self.role,
+        )
+
+        SellerService.remove_role_if_no_shops(
+            self.user,
+        )
+
+        self.assertFalse(
+            UserRole.objects.filter(
+                user=self.user,
+                role=self.role,
+            ).exists()
+        )
+
+    def test_keep_role_if_user_has_shop(self):
+        UserRole.objects.create(
+            user=self.user,
+            role=self.role,
+        )
+
+        Shop.objects.create(
+            owner=self.user,
+            name="Test shop",
+            carrier=DeliveryType.CDEK,
+        )
+
+        SellerService.remove_role_if_no_shops(
+            self.user,
+        )
+
+        self.assertTrue(
+            UserRole.objects.filter(
+                user=self.user,
+                role=self.role,
+            ).exists()
         )

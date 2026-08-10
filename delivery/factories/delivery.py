@@ -8,6 +8,7 @@ from delivery.tasks.tariffs import sync_cdek_tariffs
 from seller.models import Shop
 from seller.services import ShopDeliverySettingService
 from django.core.cache import cache
+from django.db import transaction
 
 
 def initialize_cdek(shop):
@@ -26,7 +27,9 @@ def initialize_cdek(shop):
     ).exists()
 
     if not has_other_cdek:
-        sync_cdek_tariffs.delay()
+        transaction.on_commit(
+            sync_cdek_tariffs.delay
+        )
 
 
 def cleanup_cdek(shop):

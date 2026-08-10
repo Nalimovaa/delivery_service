@@ -12,7 +12,17 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ("id", "email", "first_name", "last_name", "middle_name", "password", "password_repeat")
+        fields = (
+            "id",
+            "email",
+            "first_name",
+            "last_name",
+            "middle_name",
+            "phone_number",
+            "location_to",
+            "password",
+            "password_repeat",
+        )
         extra_kwargs = {
             "password": {"write_only": True},  # We do not return the password in the response.
         }

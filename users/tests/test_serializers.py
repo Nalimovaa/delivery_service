@@ -33,6 +33,8 @@ class TestUserSerializer(TestCase):
                 "first_name": "User",
                 "last_name": "Test",
                 "middle_name": "Middle",
+                "phone_number": "+1234567890",
+                "location_to": "Test City",
                 "password": "12345678",
                 "password_repeat": "12345678",
             }
@@ -62,6 +64,8 @@ class TestUserSerializer(TestCase):
                 "first_name": "User",
                 "last_name": "Test",
                 "middle_name": "Middle",
+                "phone_number": "+1234567890",
+                "location_to": "Test City",
                 "password": "123",
                 "password_repeat": "456",
             }

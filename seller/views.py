@@ -5,8 +5,10 @@ from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParamete
 from delivery.factories.delivery import DeliveryFactory
 from seller.models import Shop
 from seller.serializers import ShopSerializer, ShopDeliverySettingSerializer, ShopDeliverySettingReadSerializer
+from users.models import Role, UserRole
 from users.permissions import IsCustomAuthenticated, RolePermission
-from seller.services import ShopDeliverySettingService
+from seller.services import ShopDeliverySettingService, SellerService
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 
@@ -35,8 +37,14 @@ class ShopViewSet(viewsets.ModelViewSet):
         return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
-        shop = serializer.save(owner=self.request.user)
-        DeliveryFactory.initialize(shop)
+        user = self.request.user
+
+        with transaction.atomic():
+            shop = serializer.save(owner=user)
+
+            SellerService.assign_role(user)
+
+            DeliveryFactory.initialize(shop)
 
     @extend_schema(
         summary="Список магазинов",
@@ -104,19 +112,32 @@ class ShopViewSet(viewsets.ModelViewSet):
         description="Удаляет магазин по ID",
         responses={
             204: OpenApiExample("Deleted", value={"detail": "Shop deleted"}),
-            401: OpenApiExample("Unauthorized", value={"detail": "User not authenticated"}),
-            403: OpenApiExample("Forbidden", value={"detail": "You do not have permission to delete this shop"}),
-            404: OpenApiExample("Not Found", value={"detail": "Shop not found"}),
+            401: OpenApiExample(
+                "Unauthorized",
+                value={"detail": "User not authenticated"}
+            ),
+            403: OpenApiExample(
+                "Forbidden",
+                value={"detail": "You do not have permission to delete this shop"}
+            ),
+            404: OpenApiExample(
+                "Not Found",
+                value={"detail": "Shop not found"}
+            ),
         }
     )
     def destroy(self, request, *args, **kwargs):
         """Delete store by ID."""
 
         shop = self.get_object()
+        owner = shop.owner
 
-        DeliveryFactory.cleanup(shop)
+        with transaction.atomic():
+            DeliveryFactory.cleanup(shop)
 
-        shop.delete()
+            shop.delete()
+
+            SellerService.remove_role_if_no_shops(owner)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
