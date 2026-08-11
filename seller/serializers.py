@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from seller.models import Shop, ShopDeliverySetting
+from seller.models import Shop, ShopDeliverySetting, SellerRequest
 from rest_framework import serializers
 from delivery.serializers import CDEKTariffSerializer
 
@@ -36,3 +36,42 @@ class ShopDeliverySettingReadSerializer(
             "tariff",
             "created_at",
         )
+
+
+class SellerRequestSerializer(serializers.ModelSerializer):
+    """ Serializer для просмотра заявок на получение роли Seller в ЛК пользователя"""
+    user_email = serializers.EmailField(
+        source="user.email",
+        read_only=True,
+    )
+
+    class Meta:
+        model = SellerRequest
+        fields = (
+            "id",
+            "user",
+            "user_email",
+            "status",
+            "rejection_reason",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = (
+            "id",
+            "user",
+            "user_email",
+            "status",
+            "rejection_reason",
+            "created_at",
+            "updated_at",
+        )
+
+
+
+class SellerRequestRejectSerializer(serializers.Serializer):
+    """ Serializer для отклонения заявки на получение роли Seller в ЛК пользователя"""
+    reason = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        max_length=2000,
+    )

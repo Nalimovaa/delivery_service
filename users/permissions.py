@@ -118,9 +118,15 @@ class RolePermission(BasePermission):
 
         # Identify the owner of the property
         owner = (
-            getattr(obj, "owner", None)
-            or getattr(obj, "user", None)
-            or (obj if isinstance(obj, User) else None)
+                getattr(obj, "owner", None)
+                or getattr(obj, "user", None)
+                or getattr(getattr(obj, "shop", None), "owner", None)
+                or getattr(
+            getattr(getattr(obj, "product", None), "shop", None),
+            "owner",
+            None,
+        )
+                or (obj if isinstance(obj, User) else None)
         )
 
         # Check whether the current user is the owner

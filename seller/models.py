@@ -1,5 +1,5 @@
 from django.db import models
-
+from django.conf import settings
 from delivery.models import DeliveryType
 from users.models import User
 
@@ -39,3 +39,33 @@ class ShopDeliverySetting(models.Model):
                 name="unique_shop_tariff",
             )
         ]
+
+
+class SellerRequestStatus(models.TextChoices):
+    PENDING = "pending", "На рассмотрении"
+    APPROVED = "approved", "Одобрена"
+    REJECTED = "rejected", "Отклонена"
+
+class SellerRequest(models.Model):
+    """Форма заявки на получение роли Seller"""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="seller_requests", )
+
+    status = models.CharField(
+        max_length=20,
+        choices=SellerRequestStatus.choices,
+        default=SellerRequestStatus.PENDING, )
+
+    rejection_reason = models.TextField(
+        blank=True,
+        null=True,
+        verbose_name="Причина отказа", )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True, )
+
+    def __str__(self):
+        return f"Заявка #{self.id}, email: {self.user.email},  status: {self.status}"

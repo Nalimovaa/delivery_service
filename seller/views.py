@@ -3,14 +3,17 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
 
 from delivery.factories.delivery import DeliveryFactory
-from seller.models import Shop
-from seller.serializers import ShopSerializer, ShopDeliverySettingSerializer, ShopDeliverySettingReadSerializer
+from seller.models import Shop, SellerRequest
+from seller.serializers import ShopSerializer, ShopDeliverySettingSerializer, ShopDeliverySettingReadSerializer, \
+    SellerRequestSerializer, SellerRequestRejectSerializer
 from users.models import Role, UserRole
 from users.permissions import IsCustomAuthenticated, RolePermission
-from seller.services import ShopDeliverySettingService, SellerService
+from seller.services import ShopDeliverySettingService, SellerService, SellerRequestService
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 
 
 class ShopViewSet(viewsets.ModelViewSet):
@@ -41,8 +44,6 @@ class ShopViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             shop = serializer.save(owner=user)
-
-            SellerService.assign_role(user)
 
             DeliveryFactory.initialize(shop)
 
@@ -209,4 +210,221 @@ class ShopDeliverySettingViewSet(viewsets.ViewSet):
             Shop,
             pk=shop_pk,
             owner=request.user,
+        )
+
+
+
+
+class SellerRequestViewSet(viewsets.ModelViewSet):
+    """Заявки пользователей на получение роли Seller."""
+
+    queryset = SellerRequest.objects.select_related("user")
+
+    serializer_class = SellerRequestSerializer
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "SellerRequest"
+
+    @extend_schema(
+        summary="Подать заявку на получение роли Seller",
+        description=(
+            "Создает заявку текущего пользователя на получение роли Seller. "
+            "Если пользователь уже является продавцом или его заявка "
+            "уже находится на рассмотрении, создание новой заявки запрещено. "
+            "После отклонения заявки пользователь может подать новую."
+        ),
+        request=None,
+        responses={
+            201: SellerRequestSerializer,
+            400: OpenApiExample(
+                "Bad Request",
+                value={
+                    "detail": "Заявка уже находится на рассмотрении."
+                },
+            ),
+            401: OpenApiExample(
+                "Unauthorized",
+                value={
+                    "detail": "Пользователь не авторизован."
+                },
+            ),
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "Нет прав на создание заявки."
+                },
+            ),
+        },
+    )
+    def create(self, request, *args, **kwargs):
+        """Создание заявки текущим пользователем."""
+
+        try:
+            seller_request = SellerRequestService.create(
+                request.user,
+            )
+        except ValueError as exc:
+            raise ValidationError(
+                {"detail": str(exc)}
+            )
+
+        serializer = self.get_serializer(
+            seller_request,
+        )
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        summary="Одобрить заявку",
+        description=(
+            "Одобряет заявку пользователя на получение роли Seller. "
+            "После одобрения пользователю автоматически назначается роль Seller."
+        ),
+        request=None,
+        responses={
+            200: OpenApiExample(
+                "Success",
+                value={
+                    "detail": (
+                        "Заявка одобрена. "
+                        "Пользователь получил роль Seller."
+                    )
+                },
+            ),
+            400: OpenApiExample(
+                "Bad Request",
+                value={
+                    "detail": (
+                        "Можно одобрить только заявку, "
+                        "находящуюся на рассмотрении."
+                    )
+                },
+            ),
+            401: OpenApiExample(
+                "Unauthorized",
+                value={
+                    "detail": "Пользователь не авторизован."
+                },
+            ),
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "Недостаточно прав."
+                },
+            ),
+            404: OpenApiExample(
+                "Not Found",
+                value={
+                    "detail": "Заявка не найдена."
+                },
+            ),
+        },
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="approve",
+    )
+    def approve(self, request, pk=None):
+        """Одобрение заявки администратором."""
+
+        seller_request = self.get_object()
+
+        try:
+            SellerRequestService.approve(
+                seller_request,
+            )
+        except ValueError as exc:
+            raise ValidationError(
+                {"detail": str(exc)}
+            )
+
+        return Response(
+            {
+                "detail": (
+                    "Заявка одобрена. "
+                    "Пользователь получил роль Seller."
+                )
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(
+        summary="Отклонить заявку",
+        description=(
+            "Отклоняет заявку пользователя на получение роли Seller. "
+            "При отклонении необходимо указать причину. "
+            "После отклонения пользователь сможет подать новую заявку."
+        ),
+        request=SellerRequestRejectSerializer,
+        responses={
+            200: OpenApiExample(
+                "Success",
+                value={
+                    "detail": "Заявка отклонена."
+                },
+            ),
+            400: OpenApiExample(
+                "Bad Request",
+                value={
+                    "detail": "Необходимо указать причину отказа."
+                },
+            ),
+            401: OpenApiExample(
+                "Unauthorized",
+                value={
+                    "detail": "Пользователь не авторизован."
+                },
+            ),
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "Недостаточно прав."
+                },
+            ),
+            404: OpenApiExample(
+                "Not Found",
+                value={
+                    "detail": "Заявка не найдена."
+                },
+            ),
+        },
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="reject",
+    )
+    def reject(self, request, pk=None):
+        """Отклонение заявки администратором."""
+
+        seller_request = self.get_object()
+
+        serializer = SellerRequestRejectSerializer(
+            data=request.data,
+        )
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            SellerRequestService.reject(
+                seller_request=seller_request,
+                reason=serializer.validated_data["reason"],
+            )
+        except ValueError as exc:
+            raise ValidationError(
+                {"detail": str(exc)}
+            )
+
+        return Response(
+            {
+                "detail": "Заявка отклонена.",
+            },
+            status=status.HTTP_200_OK,
         )

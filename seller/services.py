@@ -1,7 +1,8 @@
 from django.db import transaction
+from django.utils import timezone
 from delivery.models import CDEKTariff
 from delivery.services.tariffs import CDEKTariffService
-from seller.models import ShopDeliverySetting, Shop
+from seller.models import ShopDeliverySetting, Shop, SellerRequest, SellerRequestStatus
 from users.models import Role, UserRole
 
 
@@ -102,3 +103,92 @@ class SellerService:
                 user=user,
                 role=seller_role,
             ).delete()
+
+
+
+
+class SellerRequestService:
+    """Сервис для работы с заявками на получение роли Seller."""
+
+    @staticmethod
+    def create(user):
+        # Пользователь уже продавец
+        if UserRole.objects.filter(
+            user=user,
+            role__name="Seller",
+        ).exists():
+            raise ValueError(
+                "Пользователь уже является продавцом."
+            )
+
+        # Есть активная заявка на рассмотрении
+        if SellerRequest.objects.filter(
+            user=user,
+            status=SellerRequestStatus.PENDING,
+        ).exists():
+            raise ValueError(
+                "Заявка уже находится на рассмотрении."
+            )
+
+        # После REJECTED можно подать новую заявку
+        return SellerRequest.objects.create(
+            user=user,
+            status=SellerRequestStatus.PENDING,
+            rejection_reason=None,
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def approve(seller_request: SellerRequest):
+        if seller_request.status != SellerRequestStatus.PENDING:
+            raise ValueError(
+                "Можно одобрить только заявку, находящуюся на рассмотрении."
+            )
+
+        role = Role.objects.get(name="Seller")
+
+        UserRole.objects.get_or_create(
+            user=seller_request.user,
+            role=role,
+        )
+
+        seller_request.status = SellerRequestStatus.APPROVED
+        seller_request.rejection_reason = None
+        seller_request.save(
+            update_fields=[
+                "status",
+                "rejection_reason",
+                "updated_at",
+            ]
+        )
+
+        return seller_request
+
+    @staticmethod
+    @transaction.atomic
+    def reject(
+        seller_request: SellerRequest,
+        reason: str,
+    ):
+        if seller_request.status != SellerRequestStatus.PENDING:
+            raise ValueError(
+                "Можно отклонить только заявку, находящуюся на рассмотрении."
+            )
+
+        if not reason or not reason.strip():
+            raise ValueError(
+                "Необходимо указать причину отказа."
+            )
+
+        seller_request.status = SellerRequestStatus.REJECTED
+        seller_request.rejection_reason = reason.strip()
+
+        seller_request.save(
+            update_fields=[
+                "status",
+                "rejection_reason",
+                "updated_at",
+            ]
+        )
+
+        return seller_request

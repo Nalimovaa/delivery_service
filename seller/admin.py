@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from seller.models import Shop, ShopDeliverySetting
+from seller.models import Shop, ShopDeliverySetting, SellerRequest
 
 
 @admin.register(Shop)
@@ -68,6 +68,42 @@ class ShopDeliverySettingAdmin(admin.ModelAdmin):
     autocomplete_fields = (
         "shop",
         "tariff",
+    )
+
+    ordering = (
+        "-created_at",
+    )
+
+
+@admin.register(SellerRequest)
+class SellerRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "user",
+        "status",
+        "created_at",
+        "updated_at",
+    )
+
+    search_fields = (
+        "user__email",
+        "user__first_name",
+        "user__last_name",
+        "rejection_reason",
+    )
+
+    list_filter = (
+        "status",
+        "created_at",
+    )
+
+    autocomplete_fields = (
+        "user",
+    )
+
+    readonly_fields = (
+        "created_at",
+        "updated_at",
     )
 
     ordering = (

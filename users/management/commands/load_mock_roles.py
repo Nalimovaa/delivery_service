@@ -26,7 +26,19 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Roles loaded."))
 
         # 2. Creating business elements
-        elements_data = ["User", "Product", "UniqueProduct", "Shop", "ShopDeliverySetting", "Order", "Role", "UserRole", "BusinessElement", "AccessRolesRules"]
+        elements_data = [
+            "User",
+            "Product",
+            "UniqueProduct",
+            "Shop",
+            "ShopDeliverySetting",
+            "SellerRequest",
+            "Order",
+            "Role",
+            "UserRole",
+            "BusinessElement",
+            "AccessRolesRules"]
+
         elements = {}
         for name in elements_data:
             element, _ = BusinessElement.objects.get_or_create(name=name)
@@ -49,6 +61,15 @@ class Command(BaseCommand):
                 "create_permission": True,
                 "delete_all_permission": True,
             },
+            # Admin — заявки на получение Seller
+            {
+                "role": "Admin",
+                "element": "SellerRequest",
+                "read_all_permission": True,
+                "update_all_permission": True,
+                "create_permission": True,
+                "delete_all_permission": True,
+            },
             {"role": "Admin", "element": "Shop", "read_all_permission": True, "update_all_permission": True,
              "create_permission": True, "delete_all_permission": True},
             {"role": "Admin", "element": "Order", "read_all_permission": True, "update_all_permission": True,
@@ -66,7 +87,13 @@ class Command(BaseCommand):
             # edit user orders related to that store and access only to own shop delivery settings
             {"role": "Seller", "element": "Shop",
              "update_permission": True, "create_permission": True, "read_permission": True},
-            {"role": "Seller", "element": "Product", "update_permission": True, "create_permission": True, "read_permission": True},
+            {"role": "Seller",
+             "element": "Product",
+             "update_permission": True,
+             "create_permission": True,
+             "read_permission": True,
+             "delete_permission": True,
+             },
             {
                 "role": "Seller",
                 "element": "UniqueProduct",
@@ -97,6 +124,13 @@ class Command(BaseCommand):
                 "role": "Guest",
                 "element": "UniqueProduct",
                 "read_all_permission": True,
+            },
+            # User — может создать заявку и видеть свои заявки
+            {
+                "role": "User",
+                "element": "SellerRequest",
+                "read_permission": True,
+                "create_permission": True,
             },
             {"role": "Guest", "element": "Shop", "read_all_permission": True},
         ]

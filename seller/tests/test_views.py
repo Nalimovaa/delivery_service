@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from delivery.models import CDEKTariff, DeliveryType
-from seller.models import Shop, ShopDeliverySetting
+from seller.models import Shop, ShopDeliverySetting, SellerRequest, SellerRequestStatus
 from users.models import User, Role, UserRole
 from django.test import TestCase
 
@@ -192,18 +192,15 @@ class TestShopViewSet(APITestCase):
     """
     Тестирование API управления магазинами.
 
-    Проверяются:
-    - создание магазина;
-    - автоматическое назначение роли Seller;
-    - получение списка магазинов;
-    - получение магазина по ID;
-    - изменение службы доставки;
-    - удаление магазина;
-    - сохранение роли Seller, если у пользователя остались магазины;
-    - удаление роли Seller, если магазинов больше нет.
-
-    DeliveryFactory и SellerService заменяются mock-объектами,
-    так как логика этих сервисов тестируется отдельно.
+Проверяются:
+- создание магазина;
+- отсутствие автоматического назначения роли Seller;
+- получение списка магазинов;
+- получение магазина по ID;
+- изменение службы доставки;
+- удаление магазина;
+- сохранение роли Seller, если у пользователя остались магазины;
+- удаление роли Seller, если магазинов больше нет.
     """
 
     def setUp(self):
@@ -238,20 +235,15 @@ class TestShopViewSet(APITestCase):
     @patch(
         "seller.views.DeliveryFactory.initialize",
     )
-    @patch(
-        "seller.views.SellerService.assign_role",
-    )
-    def test_create_shop_with_seller_role_and_delivery_initialize(
-        self,
-        mocked_assign_role,
-        mocked_initialize,
-        *_,
+    def test_create_shop(
+            self,
+            mocked_initialize,
+            *_,
     ):
         """
         После создания магазина:
 
         - магазин создаётся с текущим пользователем в owner;
-        - вызывается SellerService.assign_role();
         - вызывается DeliveryFactory.initialize().
         """
 
@@ -278,12 +270,16 @@ class TestShopViewSet(APITestCase):
             self.user,
         )
 
-        mocked_assign_role.assert_called_once_with(
-            self.user,
-        )
-
         mocked_initialize.assert_called_once_with(
             shop,
+        )
+
+        # Роль Seller автоматически НЕ назначается.
+        self.assertFalse(
+            UserRole.objects.filter(
+                user=self.user,
+                role=self.seller_role,
+            ).exists()
         )
 
     @patch(
@@ -607,3 +603,422 @@ class TestShopViewSet(APITestCase):
             self.user,
         )
 
+
+
+class TestSellerRequestViewSet(APITestCase):
+    """
+    Тестирование API заявок на получение роли Seller.
+
+    Проверяется:
+    - создание заявки пользователем;
+    - запрет повторной pending-заявки;
+    - одобрение заявки;
+    - назначение роли Seller;
+    - отклонение заявки с причиной;
+    - обязательность причины отказа.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create(
+            email="user@test.com",
+        )
+
+        self.admin = User.objects.create(
+            email="admin@test.com",
+            is_superuser=True,
+        )
+
+        self.seller_role = Role.objects.create(
+            name="Seller",
+        )
+
+    def authenticate_user(self):
+        self.client.force_authenticate(
+            user=self.user,
+        )
+        self.client.credentials(
+            HTTP_AUTHORIZATION="Bearer test-token"
+        )
+
+    def authenticate_admin(self):
+        self.client.force_authenticate(
+            user=self.admin,
+        )
+        self.client.credentials(
+            HTTP_AUTHORIZATION="Bearer admin-token"
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_create_request(
+        self,
+        *_,
+    ):
+        """Пользователь может создать заявку."""
+
+        self.authenticate_user()
+
+        response = self.client.post(
+            "/api/seller-requests/",
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_201_CREATED,
+        )
+
+        seller_request = SellerRequest.objects.get(
+            user=self.user,
+        )
+
+        self.assertEqual(
+            seller_request.status,
+            SellerRequestStatus.PENDING,
+        )
+
+        self.assertEqual(
+            response.data["id"],
+            seller_request.id,
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_create_duplicate_pending_request(
+        self,
+        *_,
+    ):
+        """Нельзя создать вторую заявку, если первая pending."""
+
+        self.authenticate_user()
+
+        SellerRequest.objects.create(
+            user=self.user,
+            status=SellerRequestStatus.PENDING,
+        )
+
+        response = self.client.post(
+            "/api/seller-requests/",
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        self.assertIn(
+            "Заявка уже находится на рассмотрении.",
+            response.data["detail"],
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_create_request_after_rejected(
+        self,
+        *_,
+    ):
+        """После reject пользователь может подать новую заявку."""
+
+        self.authenticate_user()
+
+        SellerRequest.objects.create(
+            user=self.user,
+            status=SellerRequestStatus.REJECTED,
+            rejection_reason="Недостаточно документов.",
+        )
+
+        response = self.client.post(
+            "/api/seller-requests/",
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_201_CREATED,
+        )
+
+        self.assertEqual(
+            SellerRequest.objects.filter(
+                user=self.user,
+            ).count(),
+            2,
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_approve_request(
+        self,
+        *_,
+    ):
+        """Администратор может одобрить заявку."""
+
+        self.authenticate_admin()
+
+        seller_request = SellerRequest.objects.create(
+            user=self.user,
+            status=SellerRequestStatus.PENDING,
+        )
+
+        response = self.client.post(
+            f"/api/seller-requests/{seller_request.id}/approve/",
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        seller_request.refresh_from_db()
+
+        self.assertEqual(
+            seller_request.status,
+            SellerRequestStatus.APPROVED,
+        )
+
+        self.assertTrue(
+            UserRole.objects.filter(
+                user=self.user,
+                role=self.seller_role,
+            ).exists()
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_reject_request(
+        self,
+        *_,
+    ):
+        """Администратор может отклонить заявку с причиной."""
+
+        self.authenticate_admin()
+
+        seller_request = SellerRequest.objects.create(
+            user=self.user,
+            status=SellerRequestStatus.PENDING,
+        )
+
+        response = self.client.post(
+            f"/api/seller-requests/{seller_request.id}/reject/",
+            {
+                "reason": "Необходимо предоставить дополнительные документы.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        seller_request.refresh_from_db()
+
+        self.assertEqual(
+            seller_request.status,
+            SellerRequestStatus.REJECTED,
+        )
+
+        self.assertEqual(
+            seller_request.rejection_reason,
+            "Необходимо предоставить дополнительные документы.",
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_reject_request_without_reason(
+        self,
+        *_,
+    ):
+        """Отклонение без причины невозможно."""
+
+        self.authenticate_admin()
+
+        seller_request = SellerRequest.objects.create(
+            user=self.user,
+            status=SellerRequestStatus.PENDING,
+        )
+
+        response = self.client.post(
+            f"/api/seller-requests/{seller_request.id}/reject/",
+            {
+                "reason": "",
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        seller_request.refresh_from_db()
+
+        self.assertEqual(
+            seller_request.status,
+            SellerRequestStatus.PENDING,
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_reject_request_with_whitespace_reason(
+        self,
+        *_,
+    ):
+        """Причина из одних пробелов считается отсутствующей."""
+
+        self.authenticate_admin()
+
+        seller_request = SellerRequest.objects.create(
+            user=self.user,
+            status=SellerRequestStatus.PENDING,
+        )
+
+        response = self.client.post(
+            f"/api/seller-requests/{seller_request.id}/reject/",
+            {
+                "reason": "   ",
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        seller_request.refresh_from_db()
+
+        self.assertEqual(
+            seller_request.status,
+            SellerRequestStatus.PENDING,
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_approve_rejected_request(
+        self,
+        *_,
+    ):
+        """Нельзя одобрить уже отклоненную заявку."""
+
+        self.authenticate_admin()
+
+        seller_request = SellerRequest.objects.create(
+            user=self.user,
+            status=SellerRequestStatus.REJECTED,
+            rejection_reason="Причина отказа.",
+        )
+
+        response = self.client.post(
+            f"/api/seller-requests/{seller_request.id}/approve/",
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        seller_request.refresh_from_db()
+
+        self.assertEqual(
+            seller_request.status,
+            SellerRequestStatus.REJECTED,
+        )
+
+        self.assertFalse(
+            UserRole.objects.filter(
+                user=self.user,
+                role=self.seller_role,
+            ).exists()
+        )
+
+    @patch(
+        "users.permissions.RolePermission.has_permission",
+        return_value=True,
+    )
+    @patch(
+        "users.permissions.RolePermission.has_object_permission",
+        return_value=True,
+    )
+    def test_reject_approved_request(
+        self,
+        *_,
+    ):
+        """Нельзя отклонить уже одобренную заявку."""
+
+        self.authenticate_admin()
+
+        seller_request = SellerRequest.objects.create(
+            user=self.user,
+            status=SellerRequestStatus.APPROVED,
+        )
+
+        response = self.client.post(
+            f"/api/seller-requests/{seller_request.id}/reject/",
+            {
+                "reason": "Причина отказа.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+        seller_request.refresh_from_db()
+
+        self.assertEqual(
+            seller_request.status,
+            SellerRequestStatus.APPROVED,
+        )

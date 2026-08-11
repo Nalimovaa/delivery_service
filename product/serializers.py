@@ -17,7 +17,11 @@ class ProductSerializer(serializers.ModelSerializer):
     def validate_shop(self, shop):
         request = self.context.get("request")
 
-        if not request or not request.user.is_authenticated:
+        if (
+                not request
+                or not request.user
+                or not request.user.is_authenticated
+        ):
             raise serializers.ValidationError(
                 "Пользователь не авторизован."
             )
@@ -54,7 +58,11 @@ class UniqueProductSerializer(serializers.ModelSerializer):
     def validate_product(self, product):
         request = self.context.get("request")
 
-        if not request or not request.user.is_authenticated:
+        if (
+                not request
+                or not request.user
+                or not request.user.is_authenticated
+        ):
             raise serializers.ValidationError(
                 "Пользователь не авторизован."
             )
