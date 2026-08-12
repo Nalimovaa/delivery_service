@@ -1,5 +1,6 @@
 from django.db import transaction
 
+from order.models import Cart, CartItem
 from product.models import UniqueProduct
 
 
@@ -108,3 +109,86 @@ class StockService:
         )
 
         return unique_product
+
+
+class CartService:
+    """Данный сервис предназначен для управления корзиной пользователя, включая добавление,
+    обновление и удаление товаров, а также очистку корзины."""
+
+    @staticmethod
+    def get_or_create_cart(user):
+        """Получает корзину пользователя или создает новую, если она не существует."""
+        cart, _ = Cart.objects.get_or_create(
+            owner=user,
+        )
+        return cart
+
+    @staticmethod
+    @transaction.atomic
+    def add_item(
+        user,
+        unique_product,
+        amount,
+    ):
+        """Добавляет товар в корзину пользователя. Если товар уже существует в корзине, увеличивает его количество."""
+        cart = CartService.get_or_create_cart(user)
+
+        cart_item, created = CartItem.objects.get_or_create(
+            cart=cart,
+            unique_product=unique_product,
+            defaults={
+                "amount": amount,
+            },
+        )
+
+        if not created:
+            cart_item.amount += amount
+            cart_item.save(
+                update_fields=["amount"],
+            )
+
+        return cart_item
+
+    @staticmethod
+    @transaction.atomic
+    def update_item(
+        user,
+        cart_item,
+        amount,
+    ):
+        """Обновляет количество товара в корзине пользователя.
+        Проверяет, что товар принадлежит корзине пользователя."""
+        cart = CartService.get_or_create_cart(user)
+
+        if cart_item.cart_id != cart.id:
+            raise PermissionError(
+                "Товар не принадлежит корзине пользователя."
+            )
+
+        cart_item.amount = amount
+        cart_item.save(
+            update_fields=["amount"],
+        )
+
+        return cart_item
+
+    @staticmethod
+    @transaction.atomic
+    def remove_item(user, cart_item):
+        """Удаляет товар из корзины пользователя.
+        Проверяет, что товар принадлежит корзине пользователя."""
+        cart = CartService.get_or_create_cart(user)
+
+        if cart_item.cart_id != cart.id:
+            raise PermissionError(
+                "Товар не принадлежит корзине пользователя."
+            )
+
+        cart_item.delete()
+
+    @staticmethod
+    @transaction.atomic
+    def clear(user):
+        """Очищает корзину пользователя, удаляя все товары из нее."""
+        cart = CartService.get_or_create_cart(user)
+        cart.items.all().delete()

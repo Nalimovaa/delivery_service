@@ -34,6 +34,7 @@ class Command(BaseCommand):
             "ShopDeliverySetting",
             "SellerRequest",
             "Order",
+            "Cart",
             "Role",
             "UserRole",
             "BusinessElement",
@@ -109,6 +110,14 @@ class Command(BaseCommand):
             # User — Access own orders, edit own details, browse stores and products
             {"role": "User", "element": "Order", "read_permission": True, "create_permission": True,
              "update_permission": True, "delete_permission": True},
+            {
+                "role": "User",
+                "element": "Cart",
+                "read_permission": True,
+                "create_permission": True,
+                "update_permission": True,
+                "delete_permission": True,
+            },
             {"role": "User", "element": "User", "read_permission": True, "update_permission": True},
             {"role": "User", "element": "Shop", "read_all_permission": True},
             {"role": "User", "element": "Product", "read_all_permission": True},

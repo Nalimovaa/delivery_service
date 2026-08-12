@@ -1,13 +1,17 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, OpenApiExample
+
+from order.models import CartItem
 from users.permissions import IsCustomAuthenticated, RolePermission
 from .models import Product, UniqueProduct
-from product.serializers import ProductSerializer, UniqueProductSerializer, StockAmountSerializer
+from product.serializers import ProductSerializer, UniqueProductSerializer, StockAmountSerializer, CartSerializer, \
+    AddCartItemSerializer, CartItemSerializer, UpdateCartItemSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 
-from .services import StockService
+from .services import StockService, CartService
 
 
 class ProductViewSet(viewsets.ModelViewSet):
@@ -350,4 +354,309 @@ class UniqueProductViewSet(viewsets.ModelViewSet):
                 "stock": unique_product.stock,
             },
             status=status.HTTP_200_OK,
+        )
+
+
+class CartView(APIView):
+    """ Работа с корзиной текущего пользователя.
+    Позволяет получить текущую корзину
+    или полностью очистить её. """
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "Cart"
+
+    @extend_schema(
+        summary="Получить корзину",
+        description=(
+                "Возвращает текущую корзину авторизованного пользователя. "
+                "Если корзина еще не существует, она создается автоматически. "
+                "Корзина является персональной и доступна только её владельцу."
+        ),
+        responses={
+            200: CartSerializer,
+            401: OpenApiExample(
+                "Unauthorized",
+                value={
+                    "detail": "User not authenticated"
+                },
+                response_only=True,
+            ),
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "You do not have permission to read Cart"
+                },
+                response_only=True,
+            ),
+        },
+    )
+    def get(self, request):
+        cart = CartService.get_or_create_cart(
+            request.user
+        )
+
+        serializer = CartSerializer(cart)
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(
+        summary="Очистить корзину",
+        description=(
+                "Полностью очищает корзину текущего пользователя. "
+                "Удаляются все позиции CartItem, но сама корзина "
+                "Cart сохраняется и может быть повторно использована "
+                "при следующей покупке."
+        ),
+        responses={
+            204: None,
+            401: OpenApiExample(
+                "Unauthorized",
+                value={
+                    "detail": "User not authenticated"
+                },
+                response_only=True,
+            ),
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "You do not have permission to delete Cart"
+                },
+                response_only=True,
+            ),
+        },
+    )
+    def delete(self, request):
+        CartService.clear(request.user)
+
+        return Response(
+            status=status.HTTP_204_NO_CONTENT
+        )
+
+
+class CartItemCreateView(APIView):
+    """Добавление товара в корзину текущего пользователя."""
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "Cart"
+
+    @extend_schema(
+        summary="Добавить товар в корзину",
+        description=(
+                "Добавляет указанный вариант товара в корзину текущего пользователя. "
+                "Если данный вариант товара уже находится в корзине, "
+                "его количество увеличивается. "
+                "Если товара в корзине еще нет, создается новая позиция CartItem."
+        ),
+        request=AddCartItemSerializer,
+        responses={
+            201: CartItemSerializer,
+            400: OpenApiExample(
+                "Bad Request",
+                value={
+                    "amount": [
+                        "Количество должно быть больше нуля."
+                    ]
+                },
+                response_only=True,
+            ),
+            401: OpenApiExample(
+                "Unauthorized",
+                value={
+                    "detail": "User not authenticated"
+                },
+                response_only=True,
+            ),
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "You do not have permission to update Cart"
+                },
+                response_only=True,
+            ),
+            404: OpenApiExample(
+                "Not Found",
+                value={
+                    "detail": "Unique product not found."
+                },
+                response_only=True,
+            ),
+        },
+    )
+    def post(self, request):
+        serializer = AddCartItemSerializer(
+            data=request.data
+        )
+
+        serializer.is_valid(raise_exception=True)
+
+        cart_item = CartService.add_item(
+            user=request.user,
+            unique_product=serializer.validated_data[
+                "unique_product"
+            ],
+            amount=serializer.validated_data[
+                "amount"
+            ],
+        )
+
+        return Response(
+            CartItemSerializer(cart_item).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+class CartItemDetailView(APIView):
+    """ Работа с конкретной позицией корзины.
+    Позволяет изменить количество товара
+    или удалить позицию из корзины. """
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "Cart"
+
+    @extend_schema(
+        summary="Изменить количество товара в корзине",
+        description=(
+                "Изменяет количество конкретного варианта товара "
+                "в корзине текущего пользователя. "
+                "Количество должно быть положительным целым числом."
+        ),
+        request=UpdateCartItemSerializer,
+        responses={
+            200: CartItemSerializer,
+            400: OpenApiExample(
+                "Bad Request",
+                value={
+                    "amount": [
+                        "Количество должно быть больше нуля."
+                    ]
+                },
+                response_only=True,
+            ),
+            401: OpenApiExample(
+                "Unauthorized",
+                value={
+                    "detail": "User not authenticated"
+                },
+                response_only=True,
+            ),
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "You do not have permission to update Cart"
+                },
+                response_only=True,
+            ),
+            404: OpenApiExample(
+                "Not Found",
+                value={
+                    "detail": "Cart item not found."
+                },
+                response_only=True,
+            ),
+        },
+    )
+    def patch(self, request, pk):
+        """Функция для изменения количества товара в корзине пользователя. Принимает идентификатор товара в корзине и новое количество.
+        Если товар не найден или количество некорректно, возвращает соответствующую ошибку."""
+        cart_item = CartItem.objects.select_related(
+            "cart"
+        ).filter(
+            id=pk,
+            cart__owner=request.user,
+        ).first()
+
+        if cart_item is None:
+            return Response(
+                {
+                    "detail": "Cart item not found."
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = UpdateCartItemSerializer(
+            data=request.data
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        cart_item = CartService.update_item(
+            user=request.user,
+            cart_item=cart_item,
+            amount=serializer.validated_data[
+                "amount"
+            ],
+        )
+
+        return Response(
+            CartItemSerializer(cart_item).data,
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(
+        summary="Удалить товар из корзины",
+        description=(
+                "Удаляет конкретную позицию из корзины текущего пользователя. "
+                "Корзина пользователя при этом сохраняется."
+        ),
+        responses={
+            204: None,
+            401: OpenApiExample(
+                "Unauthorized",
+                value={
+                    "detail": "User not authenticated"
+                },
+                response_only=True,
+            ),
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "You do not have permission to update Cart"
+                },
+                response_only=True,
+            ),
+            404: OpenApiExample(
+                "Not Found",
+                value={
+                    "detail": "Cart item not found."
+                },
+                response_only=True,
+            ),
+        },
+    )
+    def delete(self, request, pk):
+        """Функция для удаления товара из корзины пользователя. Принимает идентификатор товара в корзине."""
+        cart_item = CartItem.objects.filter(
+            id=pk,
+            cart__owner=request.user,
+        ).first()
+
+        if cart_item is None:
+            return Response(
+                {"detail": "Cart item not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        CartService.remove_item(
+            user=request.user,
+            cart_item=cart_item,
+        )
+
+        return Response(
+            status=status.HTTP_204_NO_CONTENT
         )

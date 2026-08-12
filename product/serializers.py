@@ -1,6 +1,8 @@
 from rest_framework import serializers
+from decimal import Decimal
+from order.models import CartItem, Cart
 from product.models import Product, UniqueProduct
-from seller.models import Shop
+
 
 class ProductSerializer(serializers.ModelSerializer):
     class Meta:
@@ -79,4 +81,100 @@ class StockAmountSerializer(serializers.Serializer):
     amount = serializers.IntegerField(
         min_value=1,
         help_text="Количество товара.",
+    )
+
+
+class CartItemSerializer(serializers.ModelSerializer):
+    """Строка корзины (конкретный товар в корзине, с указанием количества)"""
+    price = serializers.DecimalField(
+        source="unique_product.price",
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+    )
+
+    class Meta:
+        model = CartItem
+        fields = (
+            "id",
+            "unique_product",
+            "amount",
+            "price",
+        )
+        read_only_fields = (
+            "id",
+        )
+
+    def validate_amount(self, amount):
+        if amount <= 0:
+            raise serializers.ValidationError(
+                "Количество должно быть больше нуля."
+            )
+
+        return amount
+
+    def validate_unique_product(self, unique_product):
+        if not UniqueProduct.objects.filter(
+            id=unique_product.id
+        ).exists():
+            raise serializers.ValidationError(
+                "Товар не найден."
+            )
+
+        return unique_product
+
+
+class CartSerializer(serializers.ModelSerializer):
+    """Корзина пользователя (пользователь добавил товары в корзину, но еще не оформил заказ)"""
+    items = CartItemSerializer(
+        many=True,
+        read_only=True,
+    )
+
+    items_total = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Cart
+        fields = (
+            "id",
+            "owner",
+            "created_at",
+            "updated_at",
+            "items",
+            "items_total",
+        )
+        read_only_fields = (
+            "id",
+            "owner",
+            "created_at",
+            "updated_at",
+            "items",
+            "items_total",
+        )
+
+    def get_items_total(self, obj):
+        return sum(
+            (
+                item.amount * item.unique_product.price
+                for item in obj.items.all()
+            ),
+            Decimal("0"),
+        )
+
+
+class AddCartItemSerializer(serializers.Serializer):
+    """Добавление товара в корзину (конкретный вариант товара с указанием количества)"""
+    unique_product = serializers.PrimaryKeyRelatedField(
+        queryset=UniqueProduct.objects.all()
+    )
+    amount = serializers.IntegerField(
+        min_value=1,
+        help_text="Количество добавляемых единиц товара",
+    )
+
+class UpdateCartItemSerializer(serializers.Serializer):
+    """Обновление количества товара в корзине (конкретный вариант товара с указанием нового количества)"""
+    amount = serializers.IntegerField(
+        min_value=1,
+        help_text="Новое количество товара в корзине.",
     )

@@ -52,3 +52,40 @@ class OrderProduct(models.Model):
         return (
             f"{self.unique_product} × {self.amount}"
         )
+
+
+class Cart(models.Model):
+    """ Корзина пользователя (пользователь добавил товары в корзину, но еще не оформил заказ) """
+    owner = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="cart",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class CartItem(models.Model):
+    """ Строка корзины (конкретный товар в корзине, с указанием количества) """
+    cart = models.ForeignKey(
+        Cart,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+
+    unique_product = models.ForeignKey(
+        UniqueProduct,
+        on_delete=models.CASCADE,
+        related_name="cart_items",
+    )
+
+    amount = models.PositiveIntegerField()
+
+    class Meta:
+        """Один вариант товара может присутствовать в корзине только один раз, а количество хранится в amount."""
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cart", "unique_product"],
+                name="unique_product_in_cart",
+            ),
+        ]
