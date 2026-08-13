@@ -2,6 +2,7 @@
 Для поддержки нескольких служб доставки.
 Вернет нужный Adapter:DeliveryFactory.create(DeliveryType.CDEK) -> CDEKAdapter.
 """
+from delivery.adapters.cdek import CDEKAdapter
 from delivery.models import DeliveryType, CDEKTariff
 from delivery.services.tariffs import CDEKTariffService
 from delivery.tasks.tariffs import sync_cdek_tariffs
@@ -65,8 +66,7 @@ def cleanup_cdek(shop):
 
 class DeliveryFactory:
     """ Фабрика инициализации служб доставки.
-        Вызывает необходимую логику после создания магазина
-        в зависимости от выбранной транспортной компании. """
+        Отвечает за инициализацию, очистку и создание адаптеров."""
 
     # Соответствие службы доставки и функции её инициализации.
     _handlers = {
@@ -77,8 +77,14 @@ class DeliveryFactory:
         DeliveryType.CDEK: cleanup_cdek,
     }
 
+    # Реестр адаптеров
+    _adapters = {
+        DeliveryType.CDEK: CDEKAdapter,
+        # Сюда будете добавлять новые: DeliveryType.POST: RussianPostAdapter,
+    }
+
     @classmethod
-    def initialize(cls, shop):
+    def initialize(cls, shop: Shop):
         """ Выполняет инициализацию выбранной службы доставки.
         Если для перевозчика не зарегистрирован обработчик,
         никаких дополнительных действий не выполняется. """
@@ -89,15 +95,26 @@ class DeliveryFactory:
             handler(shop)
 
     @classmethod
-    def cleanup(cls, shop, carrier=None):
+    def cleanup(cls, shop: Shop):
         """ Выполняет очистку данных службы доставки.
 
         Если carrier не указан, используется текущий
         перевозчик магазина."""
 
-        carrier = carrier or shop.carrier
-
-        handler = cls._cleanup_handlers.get(carrier)
+        handler = cls._cleanup_handlers.get(shop.carrier)
 
         if handler:
             handler(shop)
+
+    @classmethod
+    def get_adapter(cls, shop: Shop):
+        """
+        Возвращает экземпляр нужного адаптера по типу перевозчика.
+        DeliveryFactory.get_adapter(DeliveryType.CDEK) -> CDEKAdapter()
+        """
+        adapter_class = cls._adapters.get(shop.carrier)
+
+        if not adapter_class:
+            raise NotImplementedError(f"Адаптер для carrier={shop.carrier} не реализован")
+
+        return adapter_class()

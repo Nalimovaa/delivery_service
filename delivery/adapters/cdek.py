@@ -13,7 +13,7 @@ from delivery.adapters.base import DeliveryAdapter
 from delivery.client import CDEKClient
 from delivery.exceptions import CDEKBusinessError
 from delivery.routes.routes_cdek import CALCULATOR_ALL_TARIFFS, CALCULATOR_TARIFF_LIST, CALCULATOR_TARIFF
-from delivery.schemas.tariffs import AvailableTariffsResponseSchema
+from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema
 
 
 class CDEKAdapter(DeliveryAdapter):
@@ -31,15 +31,97 @@ class CDEKAdapter(DeliveryAdapter):
 
         return AvailableTariffsResponseSchema.model_validate(response) # возвращает Pydantic-модель
 
-    def get_available_tariffs(self, data):
-        """
-        Расчет доступных вариантов доставки.
-        """
+    def generate_data_tariff_and_services(
+            self,
+            from_location_code,
+            to_location_code,
+            height,
+            length,
+            weight,
+            width,
+            services=None,
+            additional_order_types=None,
+            shipment_point=None,
+            delivery_point=None,
+            currency=None,
+            date=None,
+    ):
+        """Формирование данных для def pre_calculate_delivery()"""
 
-        return self.client.post(
+        data = {
+            "type": 1,
+            "lang": "rus",
+            "from_location": {
+                "code": from_location_code,
+            },
+            "to_location": {
+                "code": to_location_code,
+            },
+            "packages": [
+                {
+                    "height": height,
+                    "length": length,
+                    "weight": weight,
+                    "width": width,
+                }
+            ],
+            "services": services or [],
+        }
+
+        if additional_order_types:
+            data["additional_order_types"] = additional_order_types
+
+        if shipment_point:
+            data["shipment_point"] = shipment_point
+
+        if delivery_point:
+            data["delivery_point"] = delivery_point
+
+        if currency:
+            data["currency"] = currency
+
+        if date:
+            data["date"] = date
+
+        return data
+
+    def pre_calculate_delivery(
+            self,
+            from_location_code,
+            to_location_code,
+            height,
+            length,
+            weight,
+            width,
+            services=None,
+            additional_order_types=None,
+            shipment_point=None,
+            delivery_point=None,
+            currency=None,
+            date=None,) -> TariffListResponseSchema:
+        """
+        Предварительный расчет доставки.
+         До оформления Order расчет доступных вариантов доставки (список тарифов для товаров в корзине).
+        """
+        data = self.generate_data_tariff_and_services(
+            from_location_code,
+            to_location_code,
+            height,
+            length,
+            weight,
+            width,
+            services=services,
+            additional_order_types=additional_order_types,
+            shipment_point=shipment_point,
+            delivery_point=delivery_point,
+            currency=currency,
+            date=date,
+        )
+        response = self.client.post(
             CALCULATOR_TARIFF_LIST,
             json=data
         )
+        return TariffListResponseSchema.model_validate(response)
 
     def calculate_by_tariff_code(
             self,

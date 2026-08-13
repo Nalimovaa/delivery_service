@@ -16,7 +16,7 @@ HEADERS_API = {
 }
 
 CALCULATOR_TARIFF = "/calculator/tariff"
-CALCULATOR_TARIFF_LIST = "/calculator/tarifflist"
+CALCULATOR_TARIFF_LIST = "/calculator/tariffAndService"
 CALCULATOR_ALL_TARIFFS = "/calculator/alltariffs"
 
 DELIVERY_POINTS = "/deliverypoints"

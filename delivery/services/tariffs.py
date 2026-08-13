@@ -1,8 +1,9 @@
 from django.core.cache import cache
 from delivery.adapters.cdek import CDEKAdapter
 from delivery.models import CDEKTariff
-from delivery.schemas.tariffs import AvailableTariffsResponseSchema
-
+from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema
+from seller.models import Shop
+from typing import List, Dict, Any, Optional
 
 
 class CDEKTariffService:
@@ -96,3 +97,47 @@ class CDEKTariffService:
     def get_cached_tariffs(self):
         """ Получение всех актуальных тарифов по договору продавца из Redis. """
         return cache.get(self.CACHE_KEY, [])
+
+
+class DeliveryOptionsService:
+    @staticmethod
+    def process_cdek_response(
+        shop: Shop,
+        response: TariffListResponseSchema,
+    ) -> List[Dict[str, Any]]:
+        """
+        Обрабатывает ответ от CDEKAdapter.pre_calculate_delivery,
+        фильтрует по разрешённым тарифам магазина и приводит к единому формату.
+        """
+        # Получаем разрешённые коды тарифов из настроек магазина
+        allowed_codes = set(
+            shop.delivery_settings.values_list('tariff__tariff_code', flat=True)
+        )
+        if not allowed_codes:
+            return []
+
+        # Кэш названий тарифов (можно получить из CDEKTariffService)
+        tariff_names = {
+            t.tariff_code: t.tariff_name
+            for t in CDEKTariff.objects.filter(tariff_code__in=allowed_codes)
+        }
+
+        options = []
+        for tariff_item in response.tariff_codes:
+            if tariff_item.status != 'true':
+                continue
+            code = int(tariff_item.tariff_code)
+            if code not in allowed_codes:
+                continue
+            res = tariff_item.result
+            options.append({
+                'tariff_code': str(code),
+                'tariff_name': tariff_names.get(code, f'Тариф {code}'),
+                'delivery_sum': res.delivery_sum,
+                'period_min': res.period_min,
+                'period_max': res.period_max,
+                'delivery_date_range': res.delivery_date_range.dict() if res.delivery_date_range else None,
+                'total_sum': res.total_sum,
+                'currency': res.currency,
+            })
+        return options

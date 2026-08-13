@@ -15,14 +15,21 @@ class DeliveryAdapter(ABC):
     """
 
     @abstractmethod
-    def calculate_delivery(self, data):
+    def pre_calculate_delivery(self, **kwargs):
+        """
+        Предварительный расчет доставки (до оформления Order)
+        """
+        pass
+
+    @abstractmethod
+    def calculate_delivery(self, **kwargs):
         """
         Расчет стоимости доставки.
         """
         pass
 
     @abstractmethod
-    def create_delivery(self, data):
+    def create_delivery(self, **kwargs):
         """
         Создание отправления.
         """

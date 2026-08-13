@@ -1,8 +1,12 @@
 from decimal import Decimal
 from typing import List, Any
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from enum import Enum
 
+
+# Схема для CDEKAdapter.get_all_tariffs()
+
+# Pydantic-схема для ответа
 
 class ContragentType(str, Enum):
     LEGAL_ENTITY = "LEGAL_ENTITY"
@@ -50,3 +54,39 @@ class AvailableTariffSchema(BaseModel):
 
 class AvailableTariffsResponseSchema(BaseModel):
     tariff_codes: List[AvailableTariffSchema]
+
+
+# Схема для CDEKAdapter.pre_calculate_delivery()
+
+# Pydantic-схема для ответа
+
+class DeliveryDateRangeSchema(BaseModel):
+    min: str
+    max: str
+
+
+class ServiceSchema(BaseModel):
+    code: str
+    sum: Decimal  # Изменено на Decimal для точного подсчета денег
+
+
+class TariffResultSchema(BaseModel):
+    delivery_sum: Decimal  # Изменено на Decimal
+    period_min: int
+    period_max: int
+    delivery_date_range: DeliveryDateRangeSchema | None = None  # Современный синтаксис вместо Optional
+    services: list[ServiceSchema] = Field(default_factory=list)  # Современный list и безопасный default_factory
+    total_sum: Decimal  # Изменено на Decimal
+    currency: str
+
+
+class TariffItemSchema(BaseModel):
+    tariff_code: str
+    status: str
+    result: TariffResultSchema
+
+
+class TariffListResponseSchema(BaseModel):
+    tariff_codes: list[TariffItemSchema] = Field(default_factory=list)
+    errors: list[dict] | None = None  # Используются встроенные list и dict с оператором |
+    warnings: list[dict] | None = None
