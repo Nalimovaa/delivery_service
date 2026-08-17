@@ -12,8 +12,10 @@
 from delivery.adapters.base import DeliveryAdapter
 from delivery.client import CDEKClient
 from delivery.exceptions import CDEKBusinessError
-from delivery.routes.routes_cdek import CALCULATOR_ALL_TARIFFS, CALCULATOR_TARIFF_LIST, CALCULATOR_TARIFF
-from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema
+from delivery.routes.routes_cdek import CALCULATOR_ALL_TARIFFS, CALCULATOR_TARIFF_LIST, CALCULATOR_TARIFF, \
+    CITIES_SUGGEST
+from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema, CDEKCitySchema, \
+    CDEKCityErrorResponseSchema
 
 
 class CDEKAdapter(DeliveryAdapter):
@@ -29,16 +31,74 @@ class CDEKAdapter(DeliveryAdapter):
 
         response = self.client.get(CALCULATOR_ALL_TARIFFS)
 
-        return AvailableTariffsResponseSchema.model_validate(response) # возвращает Pydantic-модель
+        schema = AvailableTariffsResponseSchema.model_validate(
+            response
+        )
+
+        if schema.errors:
+            messages = [
+                error.get("message", "Неизвестная ошибка")
+                for error in schema.errors
+            ]
+
+            raise CDEKBusinessError(
+                operation="get_all_tariffs",
+                code=schema.errors[0].get("code"),
+                message="; ".join(messages),
+                response_data=response,
+            )
+
+        return schema # возвращает Pydantic-модель
+
+    def suggest_cities(
+            self,
+            name: str,
+            country_code: str = "RU",
+    ) -> list[CDEKCitySchema]:
+        """Метод СДЭКа 'Подбор локации по названию города'."""
+
+        params = {
+            "name": name,
+            "country_code": country_code,
+        }
+
+        response = self.client.get(
+            CITIES_SUGGEST,
+            params=params,
+        )
+
+        # Ответ с ошибкой от CDEK
+        if isinstance(response, dict) and response.get("errors"):
+            error_schema = CDEKCityErrorResponseSchema.model_validate(
+                response
+            )
+
+            messages = [
+                error.message
+                for error in error_schema.errors
+            ]
+
+            raise CDEKBusinessError(
+                operation="suggest_cities",
+                code=error_schema.errors[0].code,
+                message="; ".join(messages),
+                response_data=response,
+            )
+
+        # Успешный ответ — список городов
+        schema = [
+            CDEKCitySchema.model_validate(city)
+            for city in response
+        ]
+
+        return schema
 
     def generate_data_tariff_and_services(
             self,
-            from_location_code,
-            to_location_code,
-            height,
-            length,
-            weight,
-            width,
+            *,
+            from_location_code: int,
+            to_location_code: int,
+            items,
             services=None,
             additional_order_types=None,
             shipment_point=None,
@@ -46,7 +106,31 @@ class CDEKAdapter(DeliveryAdapter):
             currency=None,
             date=None,
     ):
-        """Формирование данных для def pre_calculate_delivery()"""
+        """Формирование данных для def pre_calculate_delivery()
+        Отвечает за:
+        - сформировать packages из переданных CartItem;
+        - вызвать API CDEK;
+        - преобразовать ответ в TariffListResponseSchema."""
+
+        packages = []
+
+        for item in items:
+            product = item.unique_product
+
+            package = {
+                "weight": product.weight * item.amount,
+            }
+
+            # if product.length:
+            #     package["length"] = product.length
+            #
+            # if product.width:
+            #     package["width"] = product.width
+            #
+            # if product.height:
+            #     package["height"] = product.height
+
+            packages.append(package)
 
         data = {
             "type": 1,
@@ -57,14 +141,7 @@ class CDEKAdapter(DeliveryAdapter):
             "to_location": {
                 "code": to_location_code,
             },
-            "packages": [
-                {
-                    "height": height,
-                    "length": length,
-                    "weight": weight,
-                    "width": width,
-                }
-            ],
+            "packages": packages,
             "services": services or [],
         }
 
@@ -87,29 +164,25 @@ class CDEKAdapter(DeliveryAdapter):
 
     def pre_calculate_delivery(
             self,
-            from_location_code,
-            to_location_code,
-            height,
-            length,
-            weight,
-            width,
+            *,
+            from_location_code: int,
+            to_location_code: int,
+            items,
             services=None,
             additional_order_types=None,
             shipment_point=None,
             delivery_point=None,
             currency=None,
-            date=None,) -> TariffListResponseSchema:
+            date=None,
+    ) -> TariffListResponseSchema:
+        """ Предварительный расчет доставки.
+        До оформления Order расчет доступных вариантов доставки (список тарифов для товаров в корзине).
         """
-        Предварительный расчет доставки.
-         До оформления Order расчет доступных вариантов доставки (список тарифов для товаров в корзине).
-        """
+
         data = self.generate_data_tariff_and_services(
-            from_location_code,
-            to_location_code,
-            height,
-            length,
-            weight,
-            width,
+            from_location_code=from_location_code,
+            to_location_code=to_location_code,
+            items=items,
             services=services,
             additional_order_types=additional_order_types,
             shipment_point=shipment_point,
@@ -117,11 +190,28 @@ class CDEKAdapter(DeliveryAdapter):
             currency=currency,
             date=date,
         )
+
         response = self.client.post(
             CALCULATOR_TARIFF_LIST,
-            json=data
+            json=data,
         )
-        return TariffListResponseSchema.model_validate(response)
+
+        schema = TariffListResponseSchema.model_validate(response)
+
+        if schema.errors:
+            messages = [
+                error.get("message", "Неизвестная ошибка")
+                for error in schema.errors
+            ]
+
+            raise CDEKBusinessError(
+                operation="get_all_tariffs",
+                code=schema.errors[0].get("code"),
+                message="; ".join(messages),
+                response_data=response,
+            )
+
+        return schema # возвращает Pydantic-модель
 
     def calculate_by_tariff_code(
             self,
@@ -206,3 +296,4 @@ class CDEKAdapter(DeliveryAdapter):
 
     def cancel_delivery(self, delivery_id):
         raise NotImplementedError
+

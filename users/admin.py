@@ -20,12 +20,17 @@ class UserAdmin(UserAdmin):
         "date_joined",
         "is_superuser",
         "location_to",
+        "location_to_region",
+        "location_to_district",
+        "location_to_country",
     )
 
     list_filter = (
         "is_staff",
         "is_active",
         "is_superuser",
+        "location_to_country",
+        "location_to_region",
     )
 
     search_fields = (
@@ -35,6 +40,9 @@ class UserAdmin(UserAdmin):
         "middle_name",
         "phone_number",
         "location_to",
+        "location_to_region",
+        "location_to_district",
+        "location_to_country",
     )
 
     fieldsets = (
@@ -47,6 +55,17 @@ class UserAdmin(UserAdmin):
                     "last_name",
                     "middle_name",
                     "phone_number",
+                )
+            },
+        ),
+        (
+            "Delivery info",
+            {
+                "fields": (
+                    "location_to",
+                    "location_to_region",
+                    "location_to_district",
+                    "location_to_country",
                 )
             },
         ),

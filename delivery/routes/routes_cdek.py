@@ -23,6 +23,7 @@ DELIVERY_POINTS = "/deliverypoints"
 
 ORDERS = "/orders"
 ORDER = "/orders/{uuid}"
+CITIES_SUGGEST = "/location/suggest/cities"
 
 ORDER_CLIENT_RETURN = "/orders/{uuid}/clientReturn"
 ORDER_REFUSAL = "/orders/{uuid}/refusal"

@@ -6,7 +6,6 @@ from delivery.factories.delivery import DeliveryFactory
 from seller.models import Shop, SellerRequest
 from seller.serializers import ShopSerializer, ShopDeliverySettingSerializer, ShopDeliverySettingReadSerializer, \
     SellerRequestSerializer, SellerRequestRejectSerializer
-from users.models import Role, UserRole
 from users.permissions import IsCustomAuthenticated, RolePermission
 from seller.services import ShopDeliverySettingService, SellerService, SellerRequestService
 from django.db import transaction
@@ -187,10 +186,15 @@ class ShopDeliverySettingViewSet(viewsets.ViewSet):
             raise_exception=True,
         )
 
-        ShopDeliverySettingService().save(
-            shop=shop,
-            tariff_codes=serializer.validated_data["tariffs"],
-        )
+        try:
+            ShopDeliverySettingService().save(
+                shop=shop,
+                tariff_codes=serializer.validated_data["tariffs"],
+            )
+        except ValueError as exc:
+            raise ValidationError(
+                {"detail": str(exc)}
+            )
 
         return Response(status=204)
 

@@ -1,10 +1,8 @@
 """
 Для поддержки нескольких служб доставки.
-Вернет нужный Adapter:DeliveryFactory.create(DeliveryType.CDEK) -> CDEKAdapter.
 """
-from delivery.adapters.cdek import CDEKAdapter
 from delivery.models import DeliveryType, CDEKTariff
-from delivery.services.tariffs import CDEKTariffService
+from delivery.services.tariffs import CDEKTariffService, CDEKDeliveryOptionsService
 from delivery.tasks.tariffs import sync_cdek_tariffs
 from seller.models import Shop
 from seller.services import ShopDeliverySettingService
@@ -65,29 +63,43 @@ def cleanup_cdek(shop):
 
 
 class DeliveryFactory:
-    """ Фабрика инициализации служб доставки.
-        Отвечает за инициализацию, очистку и создание адаптеров."""
+    """ Фабрика служб доставки.
 
-    # Соответствие службы доставки и функции её инициализации.
+    Отвечает за выбор и инициализацию компонентов,
+    соответствующих транспортной компании магазина:
+    - обработчика инициализации;
+    - обработчика очистки;
+    - сервиса предварительного расчета доставки."""
+
+    # Обработчики инициализации служб доставки.
     _handlers = {
         DeliveryType.CDEK: initialize_cdek,
     }
 
+    # Обработчики очистки данных служб доставки.
     _cleanup_handlers = {
         DeliveryType.CDEK: cleanup_cdek,
     }
 
-    # Реестр адаптеров
-    _adapters = {
-        DeliveryType.CDEK: CDEKAdapter,
-        # Сюда будете добавлять новые: DeliveryType.POST: RussianPostAdapter,
+    # Сервисы предварительного расчета доставки.
+    #
+    # Каждый сервис инкапсулирует особенности конкретной ТК:
+    # формат входных данных;
+    # вызов соответствующего адаптера;
+    # обработку ответа API;
+    # фильтрацию тарифов;
+    # преобразование ответа в единый DTO.
+    _services = {
+        DeliveryType.CDEK: CDEKDeliveryOptionsService,
     }
 
     @classmethod
     def initialize(cls, shop: Shop):
-        """ Выполняет инициализацию выбранной службы доставки.
+        """ Выполняет инициализацию службы доставки,
+        указанной у магазина.
+
         Если для перевозчика не зарегистрирован обработчик,
-        никаких дополнительных действий не выполняется. """
+        дополнительные действия не выполняются. """
 
         handler = cls._handlers.get(shop.carrier)
 
@@ -96,10 +108,11 @@ class DeliveryFactory:
 
     @classmethod
     def cleanup(cls, shop: Shop):
-        """ Выполняет очистку данных службы доставки.
+        """ Выполняет очистку данных службы доставки,
+        указанной у магазина.
 
-        Если carrier не указан, используется текущий
-        перевозчик магазина."""
+        Если для перевозчика не зарегистрирован обработчик,
+        дополнительные действия не выполняются."""
 
         handler = cls._cleanup_handlers.get(shop.carrier)
 
@@ -107,14 +120,17 @@ class DeliveryFactory:
             handler(shop)
 
     @classmethod
-    def get_adapter(cls, shop: Shop):
-        """
-        Возвращает экземпляр нужного адаптера по типу перевозчика.
-        DeliveryFactory.get_adapter(DeliveryType.CDEK) -> CDEKAdapter()
-        """
-        adapter_class = cls._adapters.get(shop.carrier)
+    def get_service(cls, shop: Shop):
+        """ Возвращает сервис предварительного расчета доставки
+        для транспортной компании магазина.
 
-        if not adapter_class:
-            raise NotImplementedError(f"Адаптер для carrier={shop.carrier} не реализован")
+        Сервис инкапсулирует работу с соответствующим адаптером
+        и особенности обработки ответа конкретной ТК."""
+        service_class = cls._services.get(shop.carrier)
 
-        return adapter_class()
+        if not service_class:
+            raise NotImplementedError(
+                f"Сервис для carrier={shop.carrier} не реализован"
+            )
+
+        return service_class()

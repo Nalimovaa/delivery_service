@@ -58,7 +58,7 @@ class AvailableTariffsResponseSchema(BaseModel):
 
 # Схема для CDEKAdapter.pre_calculate_delivery()
 
-# Pydantic-схема для ответа
+# Pydantic-схема для ответа от CDEKAdapter.pre_calculate_delivery()
 
 class DeliveryDateRangeSchema(BaseModel):
     min: str
@@ -90,3 +90,52 @@ class TariffListResponseSchema(BaseModel):
     tariff_codes: list[TariffItemSchema] = Field(default_factory=list)
     errors: list[dict] | None = None  # Используются встроенные list и dict с оператором |
     warnings: list[dict] | None = None
+
+
+# Pydantic-схема для ответа от CDEKDeliveryOptionsService
+
+class DeliveryDateRangeDTO(BaseModel):
+    min: str
+    max: str
+
+
+class DeliveryOptionDTO(BaseModel):
+    tariff_code: int
+    tariff_name: str
+    delivery_sum: Decimal
+    period_min: int
+    period_max: int
+    delivery_date_range: DeliveryDateRangeDTO | None = None
+    services: list[dict] = []
+    total_sum: Decimal
+    currency: str
+
+
+class ShopDeliveryResultDTO(BaseModel):
+    shop_id: int
+    shop_name: str
+    unique_product_ids: list[int]
+    options: list[DeliveryOptionDTO]
+    error: str | None = None
+
+# Pydantic-схема для ответа от CDEKAdapter.suggest_cities()
+
+class CDEKCitySchema(BaseModel):
+    city_uuid: str
+    code: int
+    full_name: str = Field(max_length=255)
+    country_code: str = Field(max_length=255)
+
+class CDEKErrorSchema(BaseModel):
+    code: str
+    message: str
+
+class CDEKCityErrorResponseSchema(BaseModel):
+    """Схема ошибки при подборе города по названию."""
+    errors: list[CDEKErrorSchema]
+
+# Pydantic-схема для ответа от CDEKLocationService
+
+class CDEKLocationResultDTO(BaseModel):
+    code: int | None = None
+    error: str | None = None

@@ -76,10 +76,21 @@ class CDEKClient(BaseDeliveryClient):
     def _raise_api_error(self, response):
         response_data = response.json()
 
+        errors = response_data.get("errors", [])
+        warnings = response_data.get("warnings", [])
+
+        code = None
+        message = None
+
+        if errors:
+            code = errors[0].get("code")
+            message = errors[0].get("message")
+
         raise CDEKApiError(
             status_code=response.status_code,
-            error=response_data.get("error"),
-            error_description=response_data.get("error_description"),
+            code=code,
+            message=message,
+            warnings=warnings,
             response_data=response_data,
         )
 
@@ -125,6 +136,12 @@ class CDEKClient(BaseDeliveryClient):
         """Отправляет GET-запрос."""
         url = f"{self.base_url}{path}"
         response = self.session.get(url, headers=self._build_headers(), params=params)
+        # print("\n===== CDEK DEBUG =====")
+        # print("URL:", response.url)
+        # print("STATUS:", response.status_code)
+        # print("HEADERS:", response.headers)
+        # print("TEXT:", response.text)
+        # print("======================\n")
         response_data = response.json()
         if response.ok:
             return response_data
@@ -135,6 +152,12 @@ class CDEKClient(BaseDeliveryClient):
         """Отправляет POST-запрос."""
         url = f"{self.base_url}{path}"
         response = self.session.post(url, headers=self._build_headers(), json=json)
+        # print("\n===== CDEK DEBUG =====")
+        # print("URL:", response.url)
+        # print("STATUS:", response.status_code)
+        # print("HEADERS:", response.headers)
+        # print("TEXT:", response.text)
+        # print("======================\n")
         response_data = response.json()
         if response.ok:
             return response_data

@@ -10,6 +10,9 @@ class ShopAdmin(admin.ModelAdmin):
         "name",
         "owner",
         "location_from",
+        "location_from_region",
+        "location_from_district",
+        "location_from_country",
         "carrier",
     )
 
@@ -19,6 +22,9 @@ class ShopAdmin(admin.ModelAdmin):
         "owner__first_name",
         "owner__last_name",
         "location_from",
+        "location_from_region",
+        "location_from_district",
+        "location_from_country",
         "carrier",
     )
 

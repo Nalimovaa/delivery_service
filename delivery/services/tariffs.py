@@ -1,9 +1,11 @@
 from django.core.cache import cache
 from delivery.adapters.cdek import CDEKAdapter
 from delivery.models import CDEKTariff
-from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema
-from seller.models import Shop
-from typing import List, Dict, Any, Optional
+from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema, DeliveryOptionDTO, \
+    DeliveryDateRangeDTO, ShopDeliveryResultDTO, CDEKLocationResultDTO
+from order.models import CartItem
+from seller.models import Shop, ShopDeliverySetting
+from django.db.models import Prefetch
 
 
 class CDEKTariffService:
@@ -99,45 +101,285 @@ class CDEKTariffService:
         return cache.get(self.CACHE_KEY, [])
 
 
-class DeliveryOptionsService:
-    @staticmethod
-    def process_cdek_response(
-        shop: Shop,
-        response: TariffListResponseSchema,
-    ) -> List[Dict[str, Any]]:
-        """
-        Обрабатывает ответ от CDEKAdapter.pre_calculate_delivery,
-        фильтрует по разрешённым тарифам магазина и приводит к единому формату.
-        """
-        # Получаем разрешённые коды тарифов из настроек магазина
-        allowed_codes = set(
-            shop.delivery_settings.values_list('tariff__tariff_code', flat=True)
-        )
-        if not allowed_codes:
-            return []
+class CDEKLocationService:
 
-        # Кэш названий тарифов (можно получить из CDEKTariffService)
+    def __init__(self, adapter: CDEKAdapter | None = None):
+        self.adapter = adapter or CDEKAdapter()
+
+    def get_location_code(
+        self,
+        *,
+        city: str,
+        region: str,
+        district: str | None = None,
+    ) -> int:
+        cities = self.adapter.suggest_cities(
+            name=city,
+            country_code="RU",
+        )
+
+        # Сначала фильтруем по региону
+        cities = [
+            city_data
+            for city_data in cities
+            if region.lower() in city_data.full_name.lower()
+        ]
+
+        # Если по региону найдено несколько вариантов,
+        # дополнительно фильтруем по району
+        if len(cities) > 1 and district:
+            cities = [
+                city_data
+                for city_data in cities
+                if district.lower() in city_data.full_name.lower()
+            ]
+
+        if len(cities) != 1:
+            return CDEKLocationResultDTO(
+                error=(
+                    f"Не удалось однозначно определить "
+                    f"населенный пункт: {city}, {region}"
+                )
+            )
+
+        # ответ: code=430 error=None
+        return CDEKLocationResultDTO(
+            code=cities[0].code,
+        )
+
+class CDEKDeliveryOptionsService:
+    """Обрабатывает ответы от API СДЭКа по предварительной стоимости доставки.
+    Отвечает за:
+    - получить CartItem конкретного магазина;
+    - определить города;
+    - получить CDEK-коды;
+    - вызвать CDEKAdapter;
+    - получить тарифы;
+    - отфильтровать тарифы;
+    - вернуть ShopDeliveryResultDTO."""
+
+    def __init__(self):
+        self.adapter = CDEKAdapter()
+        self.location_service = CDEKLocationService()
+
+    def process(
+        self,
+        shop,
+        user,
+        **kwargs,
+    ) -> ShopDeliveryResultDTO:
+
+        # Загружаем позиции корзины для данного пользователя и магазина
+        items = list(
+            CartItem.objects
+            .filter(cart=user.cart)
+            .select_related(
+                "unique_product",
+                "unique_product__product",
+                "unique_product__product__shop",
+            )
+            .prefetch_related(
+                Prefetch(
+                    "unique_product__product__shop__delivery_settings",
+                    queryset=ShopDeliverySetting.objects.select_related("tariff"),
+                )
+            )
+        )
+
+        # получаем список id уникальных продуктов для магазина
+        unique_product_ids = [
+            item.unique_product_id
+            for item in items
+        ]
+
+        if not items:
+            return ShopDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=[],
+                options=[],
+                error="В корзине нет товаров этого магазина",
+            )
+
+        # проверяем наличие у магазина города отправления
+        if not shop.location_from:
+            return ShopDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                options=[],
+                error="У магазина не указан город отправления",
+            )
+        # проверяем наличие у магазина региона отправления
+        if not shop.location_from_region:
+            return ShopDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                options=[],
+                error="У магазина не указан регион отправления",
+            )
+
+        # получаем CDEK-коды:
+        from_location_result = self.location_service.get_location_code(
+            city=shop.location_from,
+            region=shop.location_from_region,
+            district=shop.location_from_district,
+        )
+
+        if from_location_result.error:
+            return ShopDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                options=[],
+                error=from_location_result.error,
+            )
+
+        to_location_result = self.location_service.get_location_code(
+            city=user.location_to,
+            region=user.location_to_region,
+            district=user.location_to_district,
+        )
+
+        if to_location_result.error:
+            return ShopDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                options=[],
+                error=to_location_result.error,
+            )
+
+        # проверяем наличие у магазина настроенных тарифов доставки
+        delivery_settings = list(
+            shop.delivery_settings.all()
+        )
+
+        if not delivery_settings:
+            return ShopDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                options=[],
+                error="У магазина не настроены тарифы доставки",
+            )
+
+        # Подготавливаем данные в формате,
+        # необходимом CDEKAdapter.
+        data = self._prepare_data(
+            **kwargs,
+        )
+
+        # Адаптер выполняет запрос к API СДЭК.
+        response = self.adapter.pre_calculate_delivery(
+            from_location_code=from_location_result.code,
+            to_location_code=to_location_result.code,
+            items=items,
+            **data,
+        )
+        # Фильтруем полученные тарифы по настройкам магазина.
+        options = self._filter_tariffs(
+            shop=shop,
+            response=response,
+        )
+
+        if not options:
+            return ShopDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                options=[],
+                error="Для магазина нет доступных тарифов доставки",
+            )
+
+        return ShopDeliveryResultDTO(
+            shop_id=shop.id,
+            shop_name=shop.name,
+            unique_product_ids=unique_product_ids,
+            options=options,
+        )
+
+    def _prepare_data(
+            self,
+            **kwargs,
+    ) -> dict:
+        return {
+            "services": kwargs.get("services"),
+            "additional_order_types": kwargs.get(
+                "additional_order_types"
+            ),
+            "shipment_point": kwargs.get(
+                "shipment_point"
+            ),
+            "delivery_point": kwargs.get(
+                "delivery_point"
+            ),
+            "currency": kwargs.get(
+                "currency"
+            ),
+            "date": kwargs.get("date"),
+        }
+
+    def _filter_tariffs(
+            self,
+            shop,
+            response: TariffListResponseSchema,
+    ) -> list[dict]:
+        """Фильтрует тарифы CDEK по настройкам доставки магазина."""
+
+        # Коды тарифов, которые разрешены в настройках магазина: allowed_codes = {121, 59}
+        allowed_codes = {
+            setting.tariff.tariff_code
+            for setting in shop.delivery_settings.all()
+        }
+
+        # Названия тарифов из БД: {121: "Экономичная посылка", 59: "Посылка склад-склад"}
         tariff_names = {
-            t.tariff_code: t.tariff_name
-            for t in CDEKTariff.objects.filter(tariff_code__in=allowed_codes)
+            tariff.tariff_code: tariff.tariff_name
+            for tariff in CDEKTariff.objects.filter(
+                tariff_code__in=allowed_codes
+            )
         }
 
         options = []
+
+        # список доступных кодов тарифов из ответа API СДЕКа
         for tariff_item in response.tariff_codes:
-            if tariff_item.status != 'true':
+            code = int(tariff_item.tariff_code)  # [121, 59, 136]
+
+            # Оставляем только тарифы,
+            # которые разрешены настройками магазина.
+            if code not in allowed_codes: # code = [121, 59, 136] сравниваем с allowed_codes = {121, 59}
                 continue
-            code = int(tariff_item.tariff_code)
-            if code not in allowed_codes:
-                continue
-            res = tariff_item.result
+
+            # tariff_item — это один объект TariffItemSchema
+            # а tariff_item.result - это объект TariffResultSchema, содержащий информацию о стоимости и сроках доставки для данного тарифа из API СДЕКа
+            result = tariff_item.result
+
             options.append({
-                'tariff_code': str(code),
-                'tariff_name': tariff_names.get(code, f'Тариф {code}'),
-                'delivery_sum': res.delivery_sum,
-                'period_min': res.period_min,
-                'period_max': res.period_max,
-                'delivery_date_range': res.delivery_date_range.dict() if res.delivery_date_range else None,
-                'total_sum': res.total_sum,
-                'currency': res.currency,
+                "tariff_code": code,
+                "tariff_name": tariff_names.get(
+                    code,
+                    f"Тариф {code}",
+                ),
+                "delivery_sum": result.delivery_sum,
+                "period_min": result.period_min,
+                "period_max": result.period_max,
+                "delivery_date_range": (
+                    result.delivery_date_range.model_dump()
+                    if result.delivery_date_range
+                    else None
+                ),
+                "services": [
+                    {
+                        "code": service.code,
+                        "sum": service.sum,
+                    }
+                    for service in result.services
+                ],
+                "total_sum": result.total_sum,
+                "currency": result.currency,
             })
+
         return options

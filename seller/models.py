@@ -9,9 +9,32 @@ class Shop(models.Model):
     name = models.CharField(max_length=255)
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="shops")
     legal_info = models.TextField(blank=True, null=True)
-    location_from = models.CharField(max_length=255, blank=True, null=True) # город отправления магазина
-    carrier = models.IntegerField(choices=DeliveryType.choices) # транспортная компания
 
+    # delivery data
+    location_from = models.CharField(
+        max_length=255,
+        verbose_name="Город отправления магазина",)
+
+    location_from_region = models.CharField(
+        max_length=255,
+        verbose_name="Область/регион магазина",
+    )
+
+    location_from_district = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name="Район магазина",
+    )
+
+    location_from_country = models.CharField(
+        max_length=255,
+        default="Россия",
+        verbose_name="Страна магазина",
+    )
+
+    # транспортная компания
+    carrier = models.IntegerField(choices=DeliveryType.choices)
 
     def __str__(self):
         return self.name

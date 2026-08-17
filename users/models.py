@@ -30,11 +30,28 @@ class User(AbstractBaseUser, PermissionsMixin):
     last_name = models.CharField(max_length=255)
     middle_name = models.CharField(max_length=255)
     phone_number = models.CharField(max_length=20)
+
+    # delivery data
     location_to = models.CharField(
+        max_length=255,
+        verbose_name="Город получателя",
+    )
+    location_to_region = models.CharField(
+        max_length=255,
+        verbose_name="Область/регион получателя",
+    )
+
+    location_to_district = models.CharField(
         max_length=255,
         blank=True,
         null=True,
-        verbose_name="Город получателя",
+        verbose_name="Район получателя",
+    )
+
+    location_to_country = models.CharField(
+        max_length=255,
+        default="Россия",
+        verbose_name="Страна получателя",
     )
 
     USERNAME_FIELD = 'email'
