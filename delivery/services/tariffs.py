@@ -2,7 +2,7 @@ from django.core.cache import cache
 from delivery.adapters.cdek import CDEKAdapter
 from delivery.models import CDEKTariff
 from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema, DeliveryOptionDTO, \
-    DeliveryDateRangeDTO, ShopDeliveryResultDTO, CDEKLocationResultDTO
+    DeliveryDateRangeDTO, ShopDeliveryResultDTO, CDEKLocationResultDTO, CalculateDeliveryResultDTO
 from order.models import CartItem
 from seller.models import Shop, ShopDeliverySetting
 from django.db.models import Prefetch
@@ -151,7 +151,7 @@ class CDEKDeliveryOptionsService:
     """Обрабатывает ответы от API СДЭКа по предварительной стоимости доставки.
     Отвечает за:
     - получить CartItem конкретного магазина;
-    - определить города;
+    - определить город магазина;
     - получить CDEK-коды;
     - вызвать CDEKAdapter;
     - получить тарифы;
@@ -383,3 +383,221 @@ class CDEKDeliveryOptionsService:
             })
 
         return options
+
+
+
+class CDEKCalculateDeliveryService:
+    """
+    Выполняет расчет доставки по конкретному тарифу CDEK.
+
+    Отвечает за:
+    - получение CartItem конкретного магазина;
+    - определение города отправления магазина;
+    - определение города получения пользователя;
+    - получение CDEK-кодов городов;
+    - проверку наличия тарифов в настройках магазина;
+    - проверку наличия переданного пользователем тарифа
+      в настройках магазина;
+    - вызов CDEKAdapter.calculate_delivery();
+    - преобразование ответа CDEK в CalculateDeliveryResultDTO.
+    """
+
+    def __init__(self):
+        self.adapter = CDEKAdapter()
+        self.location_service = CDEKLocationService()
+
+    def process(
+        self,
+        shop,
+        user,
+        tariff_code: int,
+        **kwargs,
+    ) -> CalculateDeliveryResultDTO:
+
+        # ---------------------------------------------------------
+        # 1. Получаем товары корзины данного магазина
+        # ---------------------------------------------------------
+
+        items = list(
+            CartItem.objects
+            .filter(
+                cart=user.cart,
+                unique_product__product__shop=shop,
+            )
+            .select_related(
+                "unique_product",
+                "unique_product__product",
+                "unique_product__product__shop",
+            )
+            .prefetch_related(
+                Prefetch(
+                    "unique_product__product__shop__delivery_settings",
+                    queryset=ShopDeliverySetting.objects.select_related(
+                        "tariff"
+                    ),
+                )
+            )
+        )
+
+        if not items:
+            return CalculateDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=[],
+                error="В корзине нет товаров этого магазина",
+            )
+
+        # получаем список id уникальных продуктов для магазина
+        unique_product_ids = [
+            item.unique_product_id
+            for item in items
+        ]
+
+        # ---------------------------------------------------------
+        # 2. Проверяем город отправления магазина
+        # ---------------------------------------------------------
+
+        if not shop.location_from:
+            return CalculateDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                error="У магазина не указан город отправления",
+            )
+
+        if not shop.location_from_region:
+            return CalculateDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                error="У магазина не указан регион отправления",
+            )
+        # ---------------------------------------------------------
+        # 3. Получаем CDEK-код города отправления
+        # ---------------------------------------------------------
+
+        from_location_result = self.location_service.get_location_code(
+            city=shop.location_from,
+            region=shop.location_from_region,
+            district=shop.location_from_district,
+        )
+
+        if from_location_result.error:
+            return CalculateDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                error=from_location_result.error,
+            )
+
+        # ---------------------------------------------------------
+        # 4. Получаем CDEK-код города пользователя
+        # ---------------------------------------------------------
+
+        to_location_result = self.location_service.get_location_code(
+            city=user.location_to,
+            region=user.location_to_region,
+            district=user.location_to_district,
+        )
+
+        if to_location_result.error:
+            return CalculateDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                error=to_location_result.error,
+            )
+
+        # ---------------------------------------------------------
+        # 5. Получаем настройки доставки магазина
+        # ---------------------------------------------------------
+
+        delivery_settings = list(
+            shop.delivery_settings.select_related("tariff")
+        )
+
+        if not delivery_settings:
+            return CalculateDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                error="У магазина не настроены тарифы доставки",
+            )
+
+        # ---------------------------------------------------------
+        # 6. Проверяем, что выбранный тариф разрешен магазином
+        # ---------------------------------------------------------
+
+        selected_setting = next(
+            (
+                setting
+                for setting in delivery_settings
+                if setting.tariff.tariff_code == tariff_code
+            ),
+            None,
+        )
+
+        if selected_setting is None:
+            return CalculateDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                unique_product_ids=unique_product_ids,
+                error=(
+                    f"Тариф {tariff_code} "
+                    f"не разрешен настройками магазина"
+                ),
+            )
+
+        # ---------------------------------------------------------
+        # 7. Подготавливаем дополнительные параметры
+        # ---------------------------------------------------------
+
+        data = self._prepare_data(
+            **kwargs,
+        )
+
+        # ---------------------------------------------------------
+        # 8. Выполняем расчет доставки через CDEK
+        # ---------------------------------------------------------
+
+        response = self.adapter.calculate_delivery(
+            from_location_code=from_location_result.code,
+            to_location_code=to_location_result.code,
+            tariff_code=tariff_code,
+            items=items,
+            **data,
+        )
+
+        # ---------------------------------------------------------
+        # 9. Возвращаем результат
+        # ---------------------------------------------------------
+
+        return CalculateDeliveryResultDTO(
+            shop_id=shop.id,
+            shop_name=shop.name,
+            unique_product_ids=unique_product_ids,
+            tariff_code=tariff_code,
+            tariff_name=selected_setting.tariff.tariff_name,
+            calculation=response,
+        )
+
+    def _prepare_data(
+        self,
+        **kwargs,
+    ) -> dict:
+        return {
+            "services": kwargs.get("services"),
+            "additional_order_types": kwargs.get(
+                "additional_order_types"
+            ),
+            "shipment_point": kwargs.get(
+                "shipment_point"
+            ),
+            "delivery_point": kwargs.get(
+                "delivery_point"
+            ),
+            "currency": kwargs.get(
+                "currency"
+            ),
+            "date": kwargs.get("date"),
+        }

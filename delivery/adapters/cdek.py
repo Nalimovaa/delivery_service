@@ -15,7 +15,7 @@ from delivery.exceptions import CDEKBusinessError
 from delivery.routes.routes_cdek import CALCULATOR_ALL_TARIFFS, CALCULATOR_TARIFF_LIST, CALCULATOR_TARIFF, \
     CITIES_SUGGEST
 from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema, CDEKCitySchema, \
-    CDEKCityErrorResponseSchema
+    CDEKCityErrorResponseSchema, TariffCalculationResponseSchema
 
 
 class CDEKAdapter(DeliveryAdapter):
@@ -205,7 +205,7 @@ class CDEKAdapter(DeliveryAdapter):
             ]
 
             raise CDEKBusinessError(
-                operation="get_all_tariffs",
+                operation="pre_calculate_delivery",
                 code=schema.errors[0].get("code"),
                 message="; ".join(messages),
                 response_data=response,
@@ -213,22 +213,139 @@ class CDEKAdapter(DeliveryAdapter):
 
         return schema # возвращает Pydantic-модель
 
-    def calculate_by_tariff_code(
+    def generate_data_calculate_by_tariff_code(
             self,
-            data
+            *,
+            tariff_code: int,
+            from_location_code: int,
+            to_location_code: int,
+            items,
+            services=None,
+            additional_order_types=None,
+            shipment_point=None,
+            delivery_point=None,
+            currency=None,
+            date=None,
     ):
-        """
-        Финальный расчет стоимости
-        выбранного тарифа.
-        """
+        """Формирование данных для def calculate_delivery()
+        Отвечает за:
+        - сформировать packages из переданных CartItem;
+        - вызвать API CDEK;
+        - преобразовать ответ в TariffCalculationResponseSchema."""
 
-        return self.client.post(
-            CALCULATOR_TARIFF,
-            json=data
+        packages = []
+
+        for item in items:
+            product = item.unique_product
+
+            package = {
+                "weight": product.weight * item.amount,
+            }
+
+            # if product.length:
+            #     package["length"] = product.length
+            #
+            # if product.width:
+            #     package["width"] = product.width
+            #
+            # if product.height:
+            #     package["height"] = product.height
+
+            packages.append(package)
+
+        data = {
+            "type": 1,
+            "lang": "rus",
+            "tariff_code": tariff_code,
+            "from_location": {
+                "code": from_location_code,
+            },
+            "to_location": {
+                "code": to_location_code,
+            },
+            "packages": packages,
+            "services": services or [],
+        }
+
+        if additional_order_types:
+            data["additional_order_types"] = additional_order_types
+
+        if shipment_point:
+            data["shipment_point"] = shipment_point
+
+        if delivery_point:
+            data["delivery_point"] = delivery_point
+
+        if currency:
+            data["currency"] = currency
+
+        if date:
+            data["date"] = date
+
+        return data
+
+    def calculate_delivery(
+            self,
+            *,
+            tariff_code: int,
+            from_location_code: int,
+            to_location_code: int,
+            items,
+            services=None,
+            additional_order_types=None,
+            shipment_point=None,
+            delivery_point=None,
+            currency=None,
+            date=None,
+    ) -> TariffCalculationResponseSchema:
+        """
+        Финальный расчет стоимости выбранного тарифа.
+        Расчёт стоимости доставки по конкретному коду тарифа.
+
+        :param tariff_code: Код тарифа СДЭК
+        :param from_location_code: Код города отправления
+        :param to_location_code: Код города получения
+        :param items: Список CartItem
+        :param services: Список дополнительных услуг
+        :param additional_order_types: Дополнительные типы заказа
+        :param shipment_point: Код ПВЗ для привоза
+        :param delivery_point: Код ПВЗ для доставки
+        :param currency: Валюта расчёта
+        :param date: Дата планируемой передачи заказа
+        :return: Валидированная Pydantic-схема ответа
+        """
+        data = self.generate_data_calculate_by_tariff_code(
+            from_location_code=from_location_code,
+            to_location_code=to_location_code,
+            tariff_code=tariff_code,
+            items=items,
+            services=services,
+            additional_order_types=additional_order_types,
+            shipment_point=shipment_point,
+            delivery_point=delivery_point,
+            currency=currency,
+            date=date,
         )
 
-    def calculate_delivery(self, data):
-        raise NotImplementedError
+        # 4. Выполняем POST-запрос к API СДЭК
+        response = self.client.post(CALCULATOR_TARIFF, json=data)
+
+        schema = TariffCalculationResponseSchema.model_validate(response)
+
+        if schema.errors:
+            messages = [
+                error.get("message", "Неизвестная ошибка")
+                for error in schema.errors
+            ]
+
+            raise CDEKBusinessError(
+                operation="calculate_by_tariff_code",
+                code=schema.errors[0].get("code"),
+                message="; ".join(messages),
+                response_data=response,
+            )
+
+        return schema  # возвращает Pydantic-модель
 
     def create_delivery(self, data):
         """Успешное создание заказа в системе СДЭК"""

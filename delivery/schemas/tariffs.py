@@ -139,3 +139,55 @@ class CDEKCityErrorResponseSchema(BaseModel):
 class CDEKLocationResultDTO(BaseModel):
     code: int | None = None
     error: str | None = None
+
+
+# Pydantic-схема для ответа от CDEKAdapter.calculate_delivery()
+
+# delivery/schemas/tariffs.py
+class ServiceDetailSchema(BaseModel):
+    """Детали дополнительной услуги в ответе /calculator/tariff"""
+    code: str
+    sum: Decimal
+    total_sum: Decimal | None = None
+    discount_percent: int | None = None
+    discount_sum: Decimal | None = None
+    vat_rate: Decimal | None = None
+    vat_sum: Decimal | None = None
+
+
+class TariffCalculationResponseSchema(BaseModel):
+    """Схема ответа от CDEK на запрос /calculator/tariff"""
+    delivery_sum: Decimal
+    period_min: int
+    period_max: int
+    calendar_min: int | None = None
+    calendar_max: int | None = None
+    weight_calc: int
+    services: list[ServiceDetailSchema] = Field(default_factory=list)
+    total_sum: Decimal
+    currency: str
+    delivery_date_range: DeliveryDateRangeSchema | None = None
+    errors: list[dict] | None = None
+    warnings: list[dict] | None = None
+
+
+# Pydantic-схема для ответа от CDEKCalculateDeliveryService
+
+class CalculateDeliveryResultDTO(BaseModel):
+    """
+    Результат расчета выбранного тарифа доставки
+    для конкретного магазина.
+    """
+
+    shop_id: int
+    shop_name: str
+    unique_product_ids: list[int]
+
+    # Тариф, выбранный пользователем
+    tariff_code: int | None = None
+    tariff_name: str | None = None
+
+    # Результат расчета CDEK
+    calculation: TariffCalculationResponseSchema | None = None
+
+    error: str | None = None
