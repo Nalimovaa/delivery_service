@@ -2,7 +2,7 @@
 Для поддержки нескольких служб доставки.
 """
 from delivery.models import DeliveryType, CDEKTariff
-from delivery.services.tariffs import CDEKTariffService, CDEKDeliveryOptionsService
+from delivery.services.tariffs import CDEKTariffService, CDEKDeliveryOptionsService, CDEKCalculateDeliveryService
 from delivery.tasks.tariffs import sync_cdek_tariffs
 from seller.models import Shop
 from seller.services import ShopDeliverySettingService
@@ -93,6 +93,11 @@ class DeliveryFactory:
         DeliveryType.CDEK: CDEKDeliveryOptionsService,
     }
 
+    # Сервисы расчета стоимости доставки по коду тарифа
+    _code_tariff_services = {
+        DeliveryType.CDEK: CDEKCalculateDeliveryService,
+    }
+
     @classmethod
     def initialize(cls, shop: Shop):
         """ Выполняет инициализацию службы доставки,
@@ -130,7 +135,23 @@ class DeliveryFactory:
 
         if not service_class:
             raise NotImplementedError(
-                f"Сервис для carrier={shop.carrier} не реализован"
+                f"Сервис предварительного расчета доставки для carrier={shop.carrier} не реализован"
+            )
+
+        return service_class()
+
+    @classmethod
+    def get_code_tariff_service(cls, shop: Shop):
+        """ Возвращает сервис расчета доставки по коду тарифа
+        для транспортной компании магазина.
+
+        Сервис инкапсулирует работу с соответствующим адаптером
+        и особенности обработки ответа конкретной ТК."""
+        service_class = cls._code_tariff_services.get(shop.carrier)
+
+        if not service_class:
+            raise NotImplementedError(
+                f"Сервис расчета доставки по коду тарифа для carrier={shop.carrier} не реализован"
             )
 
         return service_class()

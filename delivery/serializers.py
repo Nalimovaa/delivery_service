@@ -73,6 +73,7 @@ class DeliveryOptionSerializer(serializers.Serializer):
 class ShopDeliveryResultSerializer(serializers.Serializer):
     shop_id = serializers.IntegerField()
     shop_name = serializers.CharField()
+    carrier_name = serializers.CharField()
 
     unique_product_ids = serializers.ListField(
         child=serializers.IntegerField(),
@@ -80,6 +81,98 @@ class ShopDeliveryResultSerializer(serializers.Serializer):
 
     options = DeliveryOptionSerializer(
         many=True,
+    )
+
+    error = serializers.CharField(
+        allow_null=True,
+        required=False,
+    )
+
+
+class CalculateDeliveryRequestSerializer(serializers.Serializer):
+    selected_tariffs = serializers.DictField(
+        child=serializers.IntegerField(),
+        help_text=(
+            "Соответствие ID магазина выбранному коду тарифа. "
+            "Например: {\"1\": 137, \"4\": 121}"
+        ),
+    )
+
+    def validate_selected_tariffs(self, value):
+        return {
+            int(shop_id): tariff_code
+            for shop_id, tariff_code in value.items()
+        }
+
+# Сериалайзеры для расчета стоимости доставки по коду тарифа (СДЭК) - для сваггера
+
+class ShopCalculateDeliveryResultSerializer(serializers.Serializer):
+    """Ответ по расчету доставки для одного магазина."""
+
+    shop_id = serializers.IntegerField()
+    shop_name = serializers.CharField()
+    carrier_name = serializers.CharField()
+    unique_product_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+    )
+
+    products_sum = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        allow_null=True,
+    )
+    delivery_sum = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        allow_null=True,
+    )
+    total_sum = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        allow_null=True,
+    )
+
+    tariff_code = serializers.IntegerField(
+        allow_null=True,
+        required=False,
+    )
+    tariff_name = serializers.CharField(
+        allow_null=True,
+        required=False,
+    )
+
+    calculation = serializers.JSONField(
+        allow_null=True,
+        required=False,
+    )
+
+    error = serializers.CharField(
+        allow_null=True,
+        required=False,
+    )
+
+
+class CartDeliveryResultSerializer(serializers.Serializer):
+    """Итоговый результат расчета стоимости всей корзины."""
+
+    shops = ShopCalculateDeliveryResultSerializer(
+        many=True,
+    )
+
+    products_sum = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        allow_null=True,
+    )
+    delivery_sum = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        allow_null=True,
+    )
+    total_sum = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        allow_null=True,
     )
 
     error = serializers.CharField(

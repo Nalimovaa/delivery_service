@@ -186,26 +186,31 @@ class CDEKDeliveryOptionsService:
             )
         )
 
+        if not items:
+            return ShopDeliveryResultDTO(
+                shop_id=shop.id,
+                shop_name=shop.name,
+                carrier_name="",
+                unique_product_ids=[],
+                options=[],
+                error="В корзине нет товаров этого магазина",
+            )
+
         # получаем список id уникальных продуктов для магазина
         unique_product_ids = [
             item.unique_product_id
             for item in items
         ]
 
-        if not items:
-            return ShopDeliveryResultDTO(
-                shop_id=shop.id,
-                shop_name=shop.name,
-                unique_product_ids=[],
-                options=[],
-                error="В корзине нет товаров этого магазина",
-            )
+        # получаем название службы доставки магазина
+        carrier_name = shop.get_carrier_display()
 
         # проверяем наличие у магазина города отправления
         if not shop.location_from:
             return ShopDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
                 unique_product_ids=unique_product_ids,
                 options=[],
                 error="У магазина не указан город отправления",
@@ -215,6 +220,7 @@ class CDEKDeliveryOptionsService:
             return ShopDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
                 unique_product_ids=unique_product_ids,
                 options=[],
                 error="У магазина не указан регион отправления",
@@ -231,6 +237,7 @@ class CDEKDeliveryOptionsService:
             return ShopDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
                 unique_product_ids=unique_product_ids,
                 options=[],
                 error=from_location_result.error,
@@ -246,6 +253,7 @@ class CDEKDeliveryOptionsService:
             return ShopDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
                 unique_product_ids=unique_product_ids,
                 options=[],
                 error=to_location_result.error,
@@ -260,6 +268,7 @@ class CDEKDeliveryOptionsService:
             return ShopDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
                 unique_product_ids=unique_product_ids,
                 options=[],
                 error="У магазина не настроены тарифы доставки",
@@ -288,6 +297,7 @@ class CDEKDeliveryOptionsService:
             return ShopDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
                 unique_product_ids=unique_product_ids,
                 options=[],
                 error="Для магазина нет доступных тарифов доставки",
@@ -296,6 +306,7 @@ class CDEKDeliveryOptionsService:
         return ShopDeliveryResultDTO(
             shop_id=shop.id,
             shop_name=shop.name,
+            carrier_name=carrier_name,
             unique_product_ids=unique_product_ids,
             options=options,
         )
@@ -414,10 +425,7 @@ class CDEKCalculateDeliveryService:
         **kwargs,
     ) -> CalculateDeliveryResultDTO:
 
-        # ---------------------------------------------------------
         # 1. Получаем товары корзины данного магазина
-        # ---------------------------------------------------------
-
         items = list(
             CartItem.objects
             .filter(
@@ -443,7 +451,11 @@ class CDEKCalculateDeliveryService:
             return CalculateDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name="",
+                tariff_code=tariff_code,
                 unique_product_ids=[],
+                products_sum=None,
+                delivery_sum=None,
                 error="В корзине нет товаров этого магазина",
             )
 
@@ -453,15 +465,25 @@ class CDEKCalculateDeliveryService:
             for item in items
         ]
 
-        # ---------------------------------------------------------
-        # 2. Проверяем город отправления магазина
-        # ---------------------------------------------------------
+        # получаем название службы доставки магазина
+        carrier_name = shop.get_carrier_display()
 
+        # сумма товаров в корзине для данного магазина
+        products_sum = sum(
+            item.unique_product.price * item.amount
+            for item in items
+        )
+
+        # 2. Проверяем город отправления магазина
         if not shop.location_from:
             return CalculateDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
+                tariff_code=tariff_code,
                 unique_product_ids=unique_product_ids,
+                products_sum=products_sum,
+                delivery_sum=None,
                 error="У магазина не указан город отправления",
             )
 
@@ -469,13 +491,14 @@ class CDEKCalculateDeliveryService:
             return CalculateDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
+                tariff_code=tariff_code,
                 unique_product_ids=unique_product_ids,
+                products_sum=products_sum,
+                delivery_sum=None,
                 error="У магазина не указан регион отправления",
             )
-        # ---------------------------------------------------------
         # 3. Получаем CDEK-код города отправления
-        # ---------------------------------------------------------
-
         from_location_result = self.location_service.get_location_code(
             city=shop.location_from,
             region=shop.location_from_region,
@@ -486,14 +509,15 @@ class CDEKCalculateDeliveryService:
             return CalculateDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
+                tariff_code=tariff_code,
                 unique_product_ids=unique_product_ids,
+                products_sum=products_sum,
+                delivery_sum=None,
                 error=from_location_result.error,
             )
 
-        # ---------------------------------------------------------
         # 4. Получаем CDEK-код города пользователя
-        # ---------------------------------------------------------
-
         to_location_result = self.location_service.get_location_code(
             city=user.location_to,
             region=user.location_to_region,
@@ -504,14 +528,15 @@ class CDEKCalculateDeliveryService:
             return CalculateDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
+                tariff_code=tariff_code,
                 unique_product_ids=unique_product_ids,
+                products_sum=products_sum,
+                delivery_sum=None,
                 error=to_location_result.error,
             )
 
-        # ---------------------------------------------------------
         # 5. Получаем настройки доставки магазина
-        # ---------------------------------------------------------
-
         delivery_settings = list(
             shop.delivery_settings.select_related("tariff")
         )
@@ -520,14 +545,15 @@ class CDEKCalculateDeliveryService:
             return CalculateDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
+                tariff_code=tariff_code,
                 unique_product_ids=unique_product_ids,
+                products_sum=products_sum,
+                delivery_sum=None,
                 error="У магазина не настроены тарифы доставки",
             )
 
-        # ---------------------------------------------------------
         # 6. Проверяем, что выбранный тариф разрешен магазином
-        # ---------------------------------------------------------
-
         selected_setting = next(
             (
                 setting
@@ -541,25 +567,23 @@ class CDEKCalculateDeliveryService:
             return CalculateDeliveryResultDTO(
                 shop_id=shop.id,
                 shop_name=shop.name,
+                carrier_name=carrier_name,
+                tariff_code=tariff_code,
                 unique_product_ids=unique_product_ids,
+                products_sum=products_sum,
+                delivery_sum=None,
                 error=(
                     f"Тариф {tariff_code} "
                     f"не разрешен настройками магазина"
                 ),
             )
 
-        # ---------------------------------------------------------
         # 7. Подготавливаем дополнительные параметры
-        # ---------------------------------------------------------
-
         data = self._prepare_data(
             **kwargs,
         )
 
-        # ---------------------------------------------------------
         # 8. Выполняем расчет доставки через CDEK
-        # ---------------------------------------------------------
-
         response = self.adapter.calculate_delivery(
             from_location_code=from_location_result.code,
             to_location_code=to_location_result.code,
@@ -568,16 +592,16 @@ class CDEKCalculateDeliveryService:
             **data,
         )
 
-        # ---------------------------------------------------------
         # 9. Возвращаем результат
-        # ---------------------------------------------------------
-
         return CalculateDeliveryResultDTO(
             shop_id=shop.id,
             shop_name=shop.name,
+            carrier_name=carrier_name,
             unique_product_ids=unique_product_ids,
             tariff_code=tariff_code,
             tariff_name=selected_setting.tariff.tariff_name,
+            products_sum=products_sum,
+            delivery_sum=response.total_sum,
             calculation=response,
         )
 

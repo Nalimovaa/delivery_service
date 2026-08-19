@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from delivery.views import CDEKTariffViewSet, DeliveryPreCalculationViewSet
+from delivery.views import CDEKTariffViewSet, DeliveryPreCalculationViewSet, DeliveryCalculationViewSet
 
 router = DefaultRouter()
 
@@ -15,6 +15,12 @@ router.register(
     r"delivery/pre-calculate",
     DeliveryPreCalculationViewSet,
     basename="delivery-pre-calculate",
+)
+
+router.register(
+    r"delivery/calculate",
+    DeliveryCalculationViewSet,
+    basename="delivery-calculate",
 )
 
 urlpatterns = [

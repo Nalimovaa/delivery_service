@@ -136,10 +136,12 @@ class CDEKAdapter(DeliveryAdapter):
             "type": 1,
             "lang": "rus",
             "from_location": {
-                "code": from_location_code,
+                # "code": from_location_code,
+                "postal_code": 443114,
             },
             "to_location": {
-                "code": to_location_code,
+                # "code": to_location_code,
+                "postal_code": 443115,
             },
             "packages": packages,
             "services": services or [],
@@ -258,10 +260,12 @@ class CDEKAdapter(DeliveryAdapter):
             "lang": "rus",
             "tariff_code": tariff_code,
             "from_location": {
-                "code": from_location_code,
+                # "code": from_location_code,
+                "postal_code": 443114,
             },
             "to_location": {
-                "code": to_location_code,
+                # "code": to_location_code,
+                "postal_code": 443115,
             },
             "packages": packages,
             "services": services or [],

@@ -114,6 +114,7 @@ class DeliveryOptionDTO(BaseModel):
 class ShopDeliveryResultDTO(BaseModel):
     shop_id: int
     shop_name: str
+    carrier_name: str
     unique_product_ids: list[int]
     options: list[DeliveryOptionDTO]
     error: str | None = None
@@ -181,13 +182,48 @@ class CalculateDeliveryResultDTO(BaseModel):
 
     shop_id: int
     shop_name: str
+    carrier_name: str
     unique_product_ids: list[int]
 
     # Тариф, выбранный пользователем
     tariff_code: int | None = None
     tariff_name: str | None = None
 
+    # Сумма товаров в корзине магазина (без доставки)
+    products_sum: Decimal | None = None
+
+    # Сумма доставки по выбранному тарифу
+    delivery_sum: Decimal | None = None
+
     # Результат расчета CDEK
     calculation: TariffCalculationResponseSchema | None = None
+
+    error: str | None = None
+
+
+# Pydantic-схема для ответа от DeliveryFacade.calculate_delivery для всех корзины пользователя
+
+class ShopCalculateDeliveryResultDTO(BaseModel):
+    shop_id: int
+    shop_name: str
+    carrier_name: str
+    unique_product_ids: list[int]
+
+    products_sum: Decimal | None = None
+    delivery_sum: Decimal | None = None
+    total_sum: Decimal | None = None
+
+    tariff_code: int | None = None
+    tariff_name: str | None = None
+
+    calculation: TariffCalculationResponseSchema | None = None
+    error: str | None = None
+
+class CartDeliveryResultDTO(BaseModel):
+    shops: list[ShopCalculateDeliveryResultDTO]
+
+    products_sum: Decimal | None = None
+    delivery_sum: Decimal | None = None
+    total_sum: Decimal | None = None
 
     error: str | None = None

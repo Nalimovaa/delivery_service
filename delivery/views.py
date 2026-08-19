@@ -3,7 +3,8 @@ from rest_framework.response import Response
 
 from delivery.facade import DeliveryFacade
 from delivery.schemas.tariffs import ShopDeliveryResultDTO
-from delivery.serializers import CDEKTariffSerializer, ShopDeliveryResultSerializer
+from delivery.serializers import CDEKTariffSerializer, ShopDeliveryResultSerializer, CalculateDeliveryRequestSerializer, \
+    CartDeliveryResultSerializer
 from delivery.services.tariffs import CDEKTariffService
 from drf_spectacular.utils import extend_schema, OpenApiExample
 from users.permissions import IsCustomAuthenticated, RolePermission
@@ -125,4 +126,94 @@ class DeliveryPreCalculationViewSet(viewsets.ViewSet):
                 result.model_dump(mode="json")
                 for result in results
             ]
+        )
+
+
+class DeliveryCalculationViewSet(viewsets.ViewSet):
+    """
+    Расчет итоговой стоимости доставки товаров текущей корзины
+    по выбранным пользователем тарифам для каждого магазина.
+
+    Для каждого магазина в корзине пользователь предварительно
+    выбирает тариф доставки. В запрос передается соответствие
+    shop_id -> tariff_code.
+
+    Для каждого магазина вызывается соответствующий сервис
+    доставки через DeliveryFactory.
+    """
+
+    permission_classes = [IsCustomAuthenticated, RolePermission]
+
+    # Пользователь имеет read/create/update/delete права на Cart.
+    # POST будет проверяться через create_permission.
+    business_element = "Cart"
+
+    @extend_schema(
+        summary="Расчет стоимости корзины по выбранным тарифам",
+        description=(
+            "Выполняет расчет итоговой стоимости товаров и доставки "
+            "для всех магазинов текущей корзины.\n\n"
+
+            "Корзина пользователя группируется по магазинам. "
+            "Для каждого магазина передается выбранный пользователем "
+            "тариф доставки в формате shop_id -> tariff_code.\n\n"
+
+            "Для каждого магазина:\n"
+            "1. Проверяется наличие выбранного тарифа в настройках магазина.\n"
+            "2. Получаются актуальные товары корзины данного магазина.\n"
+            "3. Получается актуальная стоимость товаров магазина.\n"
+            "4. Выполняется расчет доставки через соответствующий "
+            "сервис транспортной компании.\n"
+            "5. Формируется итоговая стоимость группы товаров "
+            "(товары + доставка).\n\n"
+
+            "В ответе возвращается отдельный результат по каждому "
+            "магазину, а также итоговая стоимость всей корзины."
+        ),
+        request=CalculateDeliveryRequestSerializer,
+        responses={
+            200: CartDeliveryResultSerializer,
+
+            400: OpenApiExample(
+                "Validation error",
+                value={
+                    "detail": "Для магазина не выбран тариф доставки",
+                },
+            ),
+
+            401: OpenApiExample(
+                "Unauthorized",
+                value={
+                    "detail": "User not authenticated",
+                },
+            ),
+
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "You do not have permission",
+                },
+            ),
+        },
+    )
+    def create(self, request):
+        """
+        Рассчитывает итоговую стоимость корзины
+        по выбранным пользователем тарифам.
+        """
+
+        serializer = CalculateDeliveryRequestSerializer(
+            data=request.data,
+        )
+        serializer.is_valid(raise_exception=True)
+
+        selected_tariffs = serializer.validated_data["selected_tariffs"]
+
+        result = DeliveryFacade().calculate_delivery(
+            user=request.user,
+            selected_tariffs=selected_tariffs,
+        )
+
+        return Response(
+            result.model_dump(mode="json")
         )
