@@ -99,10 +99,37 @@ class CalculateDeliveryRequestSerializer(serializers.Serializer):
     )
 
     def validate_selected_tariffs(self, value):
-        return {
-            int(shop_id): tariff_code
-            for shop_id, tariff_code in value.items()
-        }
+        selected_tariffs = {}
+
+        for shop_id, tariff_code in value.items():
+
+            if not shop_id:
+                raise serializers.ValidationError(
+                    "ID магазина не может быть пустым."
+                )
+
+            try:
+                shop_id = int(shop_id)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError(
+                    f"Некорректный ID магазина: {shop_id!r}. "
+                    "ID магазина должен быть целым числом."
+                )
+
+            if shop_id <= 0:
+                raise serializers.ValidationError(
+                    "ID магазина должен быть положительным целым числом."
+                )
+
+            if tariff_code <= 0:
+                raise serializers.ValidationError(
+                    f"Некорректный код тарифа для магазина {shop_id}. "
+                    "Код тарифа должен быть положительным целым числом."
+                )
+
+            selected_tariffs[shop_id] = tariff_code
+
+        return selected_tariffs
 
 # Сериалайзеры для расчета стоимости доставки по коду тарифа (СДЭК) - для сваггера
 
