@@ -1,14 +1,16 @@
 from django.core.cache import cache
 from delivery.adapters.cdek import CDEKAdapter
-from delivery.models import CDEKTariff
-from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema, DeliveryOptionDTO, \
-    DeliveryDateRangeDTO, ShopDeliveryResultDTO, CDEKLocationResultDTO, CalculateDeliveryResultDTO
+from delivery.models import CDEKTariff, CDEKCity
+from delivery.schemas.tariffs import (AvailableTariffsResponseSchema, TariffListResponseSchema, ShopDeliveryResultDTO,
+                                      CDEKLocationResultDTO, CalculateDeliveryResultDTO)
+from delivery.services.locations import CDEKCityService
 from order.models import CartItem
-from seller.models import Shop, ShopDeliverySetting
+from seller.models import ShopDeliverySetting
 from django.db.models import Prefetch
 
 
 class CDEKTariffService:
+    """Отвечает за синхронизацию тарифов CDEK из API в БД и кэш Redis."""
     CACHE_KEY = "cdek:tariffs"
     CACHE_TIMEOUT = 60 * 60 * 24
 
@@ -102,9 +104,20 @@ class CDEKTariffService:
 
 
 class CDEKLocationService:
+    """Сервис для получения CDEK-кода населенного пункта.
+
+    Источники данных проверяются в следующем порядке:
+
+    1. Redis;
+    2. PostgreSQL;
+    3. API CDEK через suggest_cities().
+
+    При получении населенного пункта из API CDEK
+    данные сохраняются в локальный справочник."""
 
     def __init__(self, adapter: CDEKAdapter | None = None):
         self.adapter = adapter or CDEKAdapter()
+        self.city_service = CDEKCityService()
 
     def get_location_code(
         self,
@@ -112,7 +125,41 @@ class CDEKLocationService:
         city: str,
         region: str,
         district: str | None = None,
-    ) -> int:
+    ) -> CDEKLocationResultDTO:
+        # 1. Ищем населенный пункт в Redis.
+        cached_cities = self.city_service.get_cached_cities()
+
+        cities = self._filter_cached_cities(
+            cities=cached_cities,
+            city=city,
+            region=region,
+            district=district,
+        )
+
+        if len(cities) == 1:
+            return CDEKLocationResultDTO(
+                code=cities[0]["code"],
+            )
+
+        # 2. Ищем населенный пункт в PostgreSQL.
+        db_cities = CDEKCity.objects.filter(
+            is_active=True,
+            city__iexact=city,
+            region__iexact=region,
+        )
+
+        if district:
+            db_cities = db_cities.filter(
+                sub_region__iexact=district,
+            )
+
+        if db_cities.count() == 1:
+            return CDEKLocationResultDTO(
+                code=db_cities.first().code,
+            )
+
+        # 3. Если в локальных источниках нет,
+        # выполняем поиск по названию через API CDEK.
         cities = self.adapter.suggest_cities(
             name=city,
             country_code="RU",
@@ -142,10 +189,59 @@ class CDEKLocationService:
                 )
             )
 
-        # ответ: code=430 error=None
-        return CDEKLocationResultDTO(
-            code=cities[0].code,
+        city_data = cities[0]
+
+        # Сохраняем найденный населенный пункт локально,
+        # чтобы повторно не обращаться к API.
+        CDEKCity.objects.update_or_create(
+            code=city_data.code,
+            defaults={
+                "city_uuid": city_data.city_uuid,
+                "city": city_data.city,
+                "fias_guid": city_data.fias_guid,
+                "country_code": city_data.country_code,
+                "country": city_data.country,
+                "region": city_data.region,
+                "region_code": city_data.region_code,
+                "sub_region": city_data.sub_region,
+                "longitude": city_data.longitude,
+                "latitude": city_data.latitude,
+                "time_zone": city_data.time_zone,
+                "payment_limit": city_data.payment_limit,
+                "is_active": True,
+            },
         )
+
+        return CDEKLocationResultDTO(
+            code=city_data.code,
+        )
+
+    @staticmethod
+    def _filter_cached_cities(
+            *,
+            cities,
+            city: str,
+            region: str,
+            district: str | None = None,
+    ) -> list:
+        """Фильтрация населенных пунктов из Redis."""
+
+        result = [
+            city_data
+            for city_data in cities
+            if city_data["city"].lower() == city.lower()
+               and city_data["region"].lower() == region.lower()
+        ]
+
+        if len(result) > 1 and district:
+            result = [
+                city_data
+                for city_data in result
+                if city_data.get("sub_region")
+                   and city_data["sub_region"].lower() == district.lower()
+            ]
+
+        return result
 
 class CDEKDeliveryOptionsService:
     """Обрабатывает ответы от API СДЭКа по предварительной стоимости доставки.

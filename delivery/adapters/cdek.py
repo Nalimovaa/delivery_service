@@ -13,7 +13,8 @@ from delivery.adapters.base import DeliveryAdapter
 from delivery.client import CDEKClient
 from delivery.exceptions import CDEKBusinessError
 from delivery.routes.routes_cdek import CALCULATOR_ALL_TARIFFS, CALCULATOR_TARIFF_LIST, CALCULATOR_TARIFF, \
-    CITIES_SUGGEST
+    CITIES_SUGGEST, CDEK_CITIES
+from delivery.schemas.locations import CDEKCitiesSchema, CDEKCitiesErrorResponseSchema
 from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema, CDEKCitySchema, \
     CDEKCityErrorResponseSchema, TariffCalculationResponseSchema
 
@@ -136,12 +137,12 @@ class CDEKAdapter(DeliveryAdapter):
             "type": 1,
             "lang": "rus",
             "from_location": {
-                # "code": from_location_code,
-                "postal_code": 443114,
+                "code": from_location_code,
+                # "postal_code": 443114,
             },
             "to_location": {
-                # "code": to_location_code,
-                "postal_code": 443115,
+                "code": to_location_code,
+                # "postal_code": 443115,
             },
             "packages": packages,
             "services": services or [],
@@ -260,12 +261,12 @@ class CDEKAdapter(DeliveryAdapter):
             "lang": "rus",
             "tariff_code": tariff_code,
             "from_location": {
-                # "code": from_location_code,
-                "postal_code": 443114,
+                "code": from_location_code,
+                # "postal_code": 443114,
             },
             "to_location": {
-                # "code": to_location_code,
-                "postal_code": 443115,
+                "code": to_location_code,
+                # "postal_code": 443115,
             },
             "packages": packages,
             "services": services or [],
@@ -350,6 +351,83 @@ class CDEKAdapter(DeliveryAdapter):
             )
 
         return schema  # возвращает Pydantic-модель
+
+    def get_cities(
+            self,
+            *,
+            country_codes: str = "RU",
+            size: int = 1000,
+            page: int = 0,
+            region_code: int | None = None,
+            kladr_region_code: str | None = None,
+            fias_region_guid: str | None = None,
+            kladr_code: str | None = None,
+            fias_guid: str | None = None,
+            postal_code: str | None = None,
+            code: int | None = None,
+            city: str | None = None,
+            payment_limit: float | None = None,
+            lang: str = "RU",
+    ) -> list[CDEKCitiesSchema]:
+        """
+        Получение списка населенных пунктов СДЭК.
+
+        Можно ограничить выборку по стране, региону,
+        коду населенного пункта, названию города и другим параметрам.
+        """
+
+        params = {
+            "country_codes": country_codes,
+            "size": size,
+            "page": page,
+            "region_code": region_code,
+            "kladr_region_code": kladr_region_code,
+            "fias_region_guid": fias_region_guid,
+            "kladr_code": kladr_code,
+            "fias_guid": fias_guid,
+            "postal_code": postal_code,
+            "code": code,
+            "city": city,
+            "payment_limit": payment_limit,
+            "lang": lang,
+        }
+
+        params = {
+            key: value
+            for key, value in params.items()
+            if value is not None
+        }
+
+        response = self.client.get(
+            CDEK_CITIES,
+            params=params,
+        )
+
+        if isinstance(response, list):
+            return [
+                CDEKCitiesSchema.model_validate(city_data)
+                for city_data in response
+            ]
+
+        error_schema = CDEKCitiesErrorResponseSchema.model_validate(
+            response
+        )
+
+        messages = [
+            error.message
+            for error in error_schema.errors
+        ]
+
+        raise CDEKBusinessError(
+            operation="get_cities",
+            code=(
+                error_schema.errors[0].code
+                if error_schema.errors
+                else None
+            ),
+            message="; ".join(messages),
+            response_data=response,
+        )
 
     def create_delivery(self, data):
         """Успешное создание заказа в системе СДЭК"""

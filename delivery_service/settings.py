@@ -209,6 +209,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "delivery.tasks.tariffs.sync_cdek_tariffs",
         "schedule": crontab(hour=3, minute=0),  # каждый день в 03:00
     },
+    "sync-cdek-cities": {
+            "task": "delivery.tasks.locations.sync_cdek_cities",
+            "schedule": crontab(hour=3, minute=30),  # каждый день в 03:30
+        },
 }
 
 # redis cash

@@ -66,3 +66,81 @@ class CDEKTariffManager(models.Manager):
                         "is_active",
                     ],
                 )
+
+
+class CDEKCityManager(models.Manager):
+    """ Менеджер модели CDEKCity для массового создания и обновления населенных пунктов CDEK."""
+
+    def bulk_update_or_create(self, cities):
+        """
+        Массовое создание и обновление населенных пунктов CDEK.
+
+        :param cities: Список или любой iterable словарей с данными
+            населенных пунктов.
+        """
+
+        with transaction.atomic():
+            # Пример existing:
+            # {
+            #     44: <CDEKCity object>,
+            #     121: <CDEKCity object>,
+            # }
+            existing = {
+                city.code: city
+                for city in self.select_for_update()
+            }
+
+            create_objects = []
+            update_objects = []
+
+            for city in cities:
+                code = city["code"]
+
+                if code in existing:
+                    obj = existing[code]
+
+                    # Обновляем данные населенного пункта
+                    # на основе актуального ответа API CDEK.
+                    obj.city_uuid = city["city_uuid"]
+                    obj.city = city["city"]
+                    obj.fias_guid = city["fias_guid"]
+                    obj.country_code = city["country_code"]
+                    obj.country = city["country"]
+                    obj.region = city["region"]
+                    obj.region_code = city["region_code"]
+                    obj.sub_region = city["sub_region"]
+                    obj.longitude = city["longitude"]
+                    obj.latitude = city["latitude"]
+                    obj.time_zone = city["time_zone"]
+                    obj.payment_limit = city["payment_limit"]
+                    obj.is_active = True
+
+                    update_objects.append(obj)
+
+                else:
+                    create_objects.append(
+                        self.model(**city)
+                    )
+
+            if create_objects:
+                self.bulk_create(create_objects)
+
+            if update_objects:
+                self.bulk_update(
+                    update_objects,
+                    fields=[
+                        "city_uuid",
+                        "city",
+                        "fias_guid",
+                        "country_code",
+                        "country",
+                        "region",
+                        "region_code",
+                        "sub_region",
+                        "longitude",
+                        "latitude",
+                        "time_zone",
+                        "payment_limit",
+                        "is_active",
+                    ],
+                )

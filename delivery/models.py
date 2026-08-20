@@ -1,8 +1,7 @@
 from django.db import models
 
 from delivery.enums import DeliveryType
-from delivery.managers import CDEKTariffManager
-
+from delivery.managers import CDEKTariffManager, CDEKCityManager
 
 
 class OrderDelivery(models.Model):
@@ -137,3 +136,123 @@ class CDEKTariff(models.Model):
     def __str__(self):
         return f"{self.tariff_name} ({self.tariff_code})"
 
+
+class CDEKCity(models.Model):
+    """Населенный пункт из справочника СДЭК."""
+
+    code = models.IntegerField(
+        unique=True,
+        db_index=True,
+        verbose_name="Код населенного пункта СДЭК",
+    )
+
+    city_uuid = models.UUIDField(
+        unique=True,
+        verbose_name="UUID населенного пункта СДЭК",
+    )
+
+    city = models.CharField(
+        max_length=255,
+        db_index=True,
+        verbose_name="Название населенного пункта",
+    )
+
+    fias_guid = models.UUIDField(
+        null=True,
+        blank=True,
+        verbose_name="UUID ФИАС населенного пункта",
+    )
+
+    country_code = models.CharField(
+        max_length=2,
+        db_index=True,
+        verbose_name="Код страны",
+    )
+
+    country = models.CharField(
+        max_length=255,
+        verbose_name="Страна",
+    )
+
+    region = models.CharField(
+        max_length=255,
+        db_index=True,
+        verbose_name="Регион",
+    )
+
+    region_code = models.IntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name="Код региона СДЭК",
+    )
+
+    sub_region = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        verbose_name="Район региона",
+    )
+
+    longitude = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name="Долгота",
+    )
+
+    latitude = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name="Широта",
+    )
+
+    time_zone = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        verbose_name="Часовой пояс",
+    )
+
+    payment_limit = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        verbose_name="Ограничение наложенного платежа",
+    )
+
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        verbose_name="Активен",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name="Дата создания",
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name="Дата обновления",
+    )
+
+    objects = CDEKCityManager()
+
+    class Meta:
+        verbose_name = "Населенный пункт CDEK"
+        verbose_name_plural = "Населенные пункты CDEK"
+        ordering = ["country_code", "region", "city"]
+        indexes = [
+            models.Index(
+                fields=["city", "region", "sub_region"],
+            ),
+            models.Index(
+                fields=["country_code", "region_code"],
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.city}, "
+            f"{self.region}, "
+            f"{self.country}"
+        )

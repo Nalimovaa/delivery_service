@@ -27,3 +27,5 @@ CITIES_SUGGEST = "/location/suggest/cities"
 
 ORDER_CLIENT_RETURN = "/orders/{uuid}/clientReturn"
 ORDER_REFUSAL = "/orders/{uuid}/refusal"
+
+CDEK_CITIES = "/location/cities"
