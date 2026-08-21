@@ -1,7 +1,7 @@
 from django.db import models
 
 from delivery.enums import DeliveryType
-from delivery.managers import CDEKTariffManager, CDEKCityManager
+from delivery.managers import CDEKTariffManager, CDEKCityManager, CDEKDeliveryPointManager
 
 
 class OrderDelivery(models.Model):
@@ -256,3 +256,262 @@ class CDEKCity(models.Model):
             f"{self.region}, "
             f"{self.country}"
         )
+
+
+
+class CDEKDeliveryPoint(models.Model):
+    """Пункт выдачи/приема CDEK."""
+
+    code = models.CharField(
+        max_length=20,
+        unique=True,
+        db_index=True,
+        verbose_name="Код ПВЗ CDEK",
+    )
+
+    name = models.CharField(
+        max_length=255,
+        verbose_name="Название ПВЗ",
+    )
+
+    uuid = models.UUIDField(
+        unique=True,
+        verbose_name="UUID ПВЗ CDEK",
+    )
+
+    address_comment = models.TextField(
+        null=True,
+        blank=True,
+        verbose_name="Комментарий к адресу",
+    )
+
+    nearest_station = models.TextField(
+        null=True,
+        blank=True,
+        verbose_name="Ближайшая остановка",
+    )
+
+    nearest_metro_station = models.TextField(
+        null=True,
+        blank=True,
+        verbose_name="Ближайшее метро",
+    )
+
+    work_time = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        verbose_name="Время работы",
+    )
+
+    email = models.EmailField(
+        null=True,
+        blank=True,
+        verbose_name="Email",
+    )
+
+    note = models.TextField(
+        null=True,
+        blank=True,
+        verbose_name="Примечание",
+    )
+
+    type = models.CharField(
+        max_length=50,
+        db_index=True,
+        verbose_name="Тип пункта",
+    )
+
+    owner_code = models.CharField(
+        max_length=50,
+        verbose_name="Код владельца",
+    )
+
+    take_only = models.BooleanField(
+        default=False,
+        verbose_name="Только выдача",
+    )
+
+    is_handout = models.BooleanField(
+        default=False,
+        verbose_name="Выдача заказов",
+    )
+
+    is_reception = models.BooleanField(
+        default=False,
+        verbose_name="Прием заказов",
+    )
+
+    is_dressing_room = models.BooleanField(
+        default=False,
+        verbose_name="Есть примерочная",
+    )
+
+    is_ltl = models.BooleanField(
+        default=False,
+        verbose_name="Поддерживает LTL",
+    )
+
+    have_cashless = models.BooleanField(
+        default=False,
+        verbose_name="Безналичная оплата",
+    )
+
+    have_cash = models.BooleanField(
+        default=False,
+        verbose_name="Наличная оплата",
+    )
+
+    have_fast_payment_system = models.BooleanField(
+        default=False,
+        verbose_name="Система быстрых платежей",
+    )
+
+    allowed_cod = models.BooleanField(
+        default=False,
+        verbose_name="Разрешен наложенный платеж",
+    )
+
+    office_image_list = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="Изображения ПВЗ",
+    )
+
+    work_time_list = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="Расписание работы",
+    )
+
+    work_time_exception_list = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="Исключения рабочего времени",
+    )
+
+    status = models.CharField(
+        max_length=50,
+        db_index=True,
+        verbose_name="Статус ПВЗ",
+    )
+
+    # Данные location из ответа CDEK
+    country_code = models.CharField(
+        max_length=2,
+        db_index=True,
+        verbose_name="Код страны",
+    )
+
+    region_code = models.IntegerField(
+        db_index=True,
+        verbose_name="Код региона CDEK",
+    )
+
+    region = models.CharField(
+        max_length=255,
+        db_index=True,
+        verbose_name="Регион",
+    )
+
+    city_code = models.IntegerField(
+        db_index=True,
+        verbose_name="Код города CDEK",
+    )
+
+    city = models.CharField(
+        max_length=255,
+        db_index=True,
+        verbose_name="Город",
+    )
+
+    postal_code = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name="Почтовый индекс",
+    )
+
+    longitude = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name="Долгота",
+    )
+
+    latitude = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name="Широта",
+    )
+
+    address = models.TextField(
+        null=True,
+        blank=True,
+        verbose_name="Адрес",
+    )
+
+    address_full = models.TextField(
+        null=True,
+        blank=True,
+        verbose_name="Полный адрес",
+    )
+
+    city_uuid = models.UUIDField(
+        verbose_name="UUID города CDEK",
+    )
+
+    ltl_acceptance_partners = models.BooleanField(
+        default=False,
+        verbose_name="Прием LTL партнерами",
+    )
+
+    ltl_issuance_partners = models.BooleanField(
+        default=False,
+        verbose_name="Выдача LTL партнерами",
+    )
+
+    fulfillment = models.BooleanField(
+        default=False,
+        verbose_name="Fulfillment",
+    )
+
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        verbose_name="Активен",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name="Дата создания",
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name="Дата обновления",
+    )
+
+    objects = CDEKDeliveryPointManager()
+
+    class Meta:
+        verbose_name = "Пункт выдачи CDEK"
+        verbose_name_plural = "Пункты выдачи CDEK"
+        ordering = ["country_code", "region", "city", "name"]
+        indexes = [
+            models.Index(
+                fields=["city", "region"],
+            ),
+            models.Index(
+                fields=["country_code", "region_code"],
+            ),
+            models.Index(
+                fields=["city_code"],
+            ),
+            models.Index(
+                fields=["status", "is_active"],
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.code} — {self.name}"

@@ -1,11 +1,11 @@
 """
 Для поддержки нескольких служб доставки.
 """
-from delivery.models import DeliveryType, CDEKTariff, CDEKCity
-from delivery.services.locations import CDEKCityService
+from delivery.models import DeliveryType, CDEKTariff, CDEKCity, CDEKDeliveryPoint
+from delivery.services.locations import CDEKCityService, CDEKDeliveryPointService
 from delivery.services.tariffs import CDEKTariffService, CDEKDeliveryOptionsService, CDEKCalculateDeliveryService
 from delivery.tasks.tariffs import sync_cdek_tariffs
-from delivery.tasks.locations import sync_cdek_cities
+from delivery.tasks.locations import sync_cdek_cities, sync_cdek_delivery_points
 from seller.models import Shop
 from seller.services import ShopDeliverySettingService
 from django.core.cache import cache
@@ -19,7 +19,8 @@ def initialize_cdek(shop):
         Если это первый магазин маркетплейса,
         использующий СДЭК, запускается синхронизация общего справочника:
          - тарифов;
-        - населенных пунктов.
+        - населенных пунктов;
+        - пунктов выдачи/приема.
         """
 
     has_other_cdek = Shop.objects.filter(
@@ -34,6 +35,9 @@ def initialize_cdek(shop):
         )
         transaction.on_commit(
             sync_cdek_cities.delay
+        )
+        transaction.on_commit(
+            sync_cdek_delivery_points.delay
         )
 
 
@@ -69,11 +73,19 @@ def cleanup_cdek(shop):
         CDEKCityService.CACHE_KEY
     )
 
+    # Удаляем общий Redis-кэш ПВЗ.
+    cache.delete(
+        CDEKDeliveryPointService.CACHE_KEY
+    )
+
     # удаляем общий справочник тарифов.
     CDEKTariff.objects.all().delete()
 
     # Удаляем общий справочник населенных пунктов.
     CDEKCity.objects.all().delete()
+
+    # Удаляем общий справочник ПВЗ.
+    CDEKDeliveryPoint.objects.all().delete()
 
 
 class DeliveryFactory:

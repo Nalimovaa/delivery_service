@@ -3,7 +3,7 @@ from django.contrib import admin
 from delivery.models import (
     OrderDelivery,
     CdekDelivery,
-    CDEKTariff, CDEKCity,
+    CDEKTariff, CDEKCity, CDEKDeliveryPoint,
 )
 
 
@@ -126,4 +126,53 @@ class CDEKCityAdmin(admin.ModelAdmin):
         "country_code",
         "region",
         "city",
+    )
+
+
+@admin.register(CDEKDeliveryPoint)
+class CDEKDeliveryPointAdmin(admin.ModelAdmin):
+    list_display = (
+        "code",
+        "name",
+        "city",
+        "region",
+        "type",
+        "status",
+        "is_handout",
+        "is_reception",
+        "is_active",
+        "updated_at",
+    )
+
+    list_filter = (
+        "is_active",
+        "status",
+        "type",
+        "is_handout",
+        "is_reception",
+        "country_code",
+        "region",
+    )
+
+    search_fields = (
+        "code",
+        "name",
+        "city",
+        "region",
+        "address",
+        "address_full",
+        "uuid",
+        "city_uuid",
+    )
+
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+    )
+
+    ordering = (
+        "country_code",
+        "region",
+        "city",
+        "name",
     )

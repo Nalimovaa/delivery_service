@@ -144,3 +144,185 @@ class CDEKCityManager(models.Manager):
                         "is_active",
                     ],
                 )
+
+
+class CDEKDeliveryPointManager(models.Manager):
+    """
+    Менеджер модели CDEKDeliveryPoint для массового создания
+    и обновления пунктов выдачи/приема CDEK.
+    """
+
+    def bulk_update_or_create(self, delivery_points):
+        """
+        Массовое создание и обновление ПВЗ CDEK.
+
+        :param delivery_points:
+            Список или любой iterable словарей с данными ПВЗ.
+        """
+
+        with transaction.atomic():
+            # Пример existing:
+            # {
+            #     "SML4": <CDEKDeliveryPoint object>,
+            #     "KACH1": <CDEKDeliveryPoint object>,
+            # }
+            existing = {
+                delivery_point.code: delivery_point
+                for delivery_point in self.select_for_update()
+            }
+
+            create_objects = []
+            update_objects = []
+
+            for delivery_point in delivery_points:
+                code = delivery_point["code"]
+
+                if code in existing:
+                    obj = existing[code]
+
+                    # Основные данные ПВЗ
+                    obj.name = delivery_point["name"]
+                    obj.uuid = delivery_point["uuid"]
+                    obj.address_comment = delivery_point[
+                        "address_comment"
+                    ]
+                    obj.nearest_station = delivery_point[
+                        "nearest_station"
+                    ]
+                    obj.nearest_metro_station = delivery_point[
+                        "nearest_metro_station"
+                    ]
+                    obj.work_time = delivery_point["work_time"]
+                    obj.email = delivery_point["email"]
+                    obj.note = delivery_point["note"]
+                    obj.type = delivery_point["type"]
+                    obj.owner_code = delivery_point["owner_code"]
+
+                    # Возможности ПВЗ
+                    obj.take_only = delivery_point["take_only"]
+                    obj.is_handout = delivery_point["is_handout"]
+                    obj.is_reception = delivery_point["is_reception"]
+                    obj.is_dressing_room = delivery_point[
+                        "is_dressing_room"
+                    ]
+                    obj.is_ltl = delivery_point["is_ltl"]
+                    obj.have_cashless = delivery_point[
+                        "have_cashless"
+                    ]
+                    obj.have_cash = delivery_point["have_cash"]
+                    obj.have_fast_payment_system = (
+                        delivery_point["have_fast_payment_system"]
+                    )
+                    obj.allowed_cod = delivery_point[
+                        "allowed_cod"
+                    ]
+
+                    # Вложенные данные
+                    obj.office_image_list = delivery_point[
+                        "office_image_list"
+                    ]
+                    obj.work_time_list = delivery_point[
+                        "work_time_list"
+                    ]
+                    obj.work_time_exception_list = (
+                        delivery_point["work_time_exception_list"]
+                    )
+
+                    obj.status = delivery_point["status"]
+
+                    # Данные location
+                    obj.country_code = delivery_point[
+                        "country_code"
+                    ]
+                    obj.region_code = delivery_point[
+                        "region_code"
+                    ]
+                    obj.region = delivery_point["region"]
+                    obj.city_code = delivery_point[
+                        "city_code"
+                    ]
+                    obj.city = delivery_point["city"]
+                    obj.postal_code = delivery_point[
+                        "postal_code"
+                    ]
+                    obj.longitude = delivery_point[
+                        "longitude"
+                    ]
+                    obj.latitude = delivery_point[
+                        "latitude"
+                    ]
+                    obj.address = delivery_point["address"]
+                    obj.address_full = delivery_point[
+                        "address_full"
+                    ]
+                    obj.city_uuid = delivery_point[
+                        "city_uuid"
+                    ]
+
+                    # Дополнительные возможности
+                    obj.ltl_acceptance_partners = (
+                        delivery_point["ltl_acceptance_partners"]
+                    )
+                    obj.ltl_issuance_partners = (
+                        delivery_point["ltl_issuance_partners"]
+                    )
+                    obj.fulfillment = delivery_point[
+                        "fulfillment"
+                    ]
+
+                    obj.is_active = True
+
+                    update_objects.append(obj)
+
+                else:
+                    create_objects.append(
+                        self.model(**delivery_point)
+                    )
+
+            if create_objects:
+                self.bulk_create(create_objects)
+
+            if update_objects:
+                self.bulk_update(
+                    update_objects,
+                    fields=[
+                        "name",
+                        "uuid",
+                        "address_comment",
+                        "nearest_station",
+                        "nearest_metro_station",
+                        "work_time",
+                        "email",
+                        "note",
+                        "type",
+                        "owner_code",
+                        "take_only",
+                        "is_handout",
+                        "is_reception",
+                        "is_dressing_room",
+                        "is_ltl",
+                        "have_cashless",
+                        "have_cash",
+                        "have_fast_payment_system",
+                        "allowed_cod",
+                        "office_image_list",
+                        "work_time_list",
+                        "work_time_exception_list",
+                        "status",
+                        "country_code",
+                        "region_code",
+                        "region",
+                        "city_code",
+                        "city",
+                        "postal_code",
+                        "longitude",
+                        "latitude",
+                        "address",
+                        "address_full",
+                        "city_uuid",
+                        "ltl_acceptance_partners",
+                        "ltl_issuance_partners",
+                        "fulfillment",
+                        "is_active",
+                    ],
+                )

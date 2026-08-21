@@ -4,7 +4,8 @@ from rest_framework.response import Response
 from delivery.facade import DeliveryFacade
 from delivery.schemas.tariffs import ShopDeliveryResultDTO
 from delivery.serializers import CDEKTariffSerializer, ShopDeliveryResultSerializer, CalculateDeliveryRequestSerializer, \
-    CartDeliveryResultSerializer
+    CartDeliveryResultSerializer, CDEKDeliveryPointSerializer
+from delivery.services.locations import CDEKDeliveryPointService
 from delivery.services.tariffs import CDEKTariffService
 from drf_spectacular.utils import extend_schema, OpenApiExample
 from users.permissions import IsCustomAuthenticated, RolePermission
@@ -217,3 +218,76 @@ class DeliveryCalculationViewSet(viewsets.ViewSet):
         return Response(
             result.model_dump(mode="json")
         )
+
+
+class DeliveryPointsViewSet(viewsets.ViewSet):
+    """
+    Получение списка пунктов выдачи и приема CDEK.
+
+    Возвращает актуальный список ПВЗ CDEK, полученный из локального
+    Redis-кэша или базы данных.
+
+    Список ПВЗ синхронизируется с API CDEK фоновой Celery-задачей.
+    """
+
+    permission_classes = [IsCustomAuthenticated, RolePermission]
+
+    # Пользователь имеет read/create/update/delete права на Cart.
+    business_element = "Cart"
+
+    @extend_schema(
+        summary="Получить список ПВЗ CDEK",
+        description=(
+            "Возвращает список актуальных пунктов выдачи и приема "
+            "CDEK, доступных для выбора при оформлении доставки.\n\n"
+
+            "ПВЗ предварительно синхронизируются с API CDEK "
+            "фоновой Celery-задачей и сохраняются в PostgreSQL "
+            "и Redis.\n\n"
+
+            "При запросе приложение использует локальные данные, "
+            "не выполняя прямой запрос к API CDEK.\n\n"
+
+            "В ответе для каждого ПВЗ возвращаются:\n"
+            "- код ПВЗ;\n"
+            "- название;\n"
+            "- тип ПВЗ;\n"
+            "- статус;\n"
+            "- страна и регион;\n"
+            "- город;\n"
+            "- почтовый индекс;\n"
+            "- адрес;\n"
+            "- координаты;\n"
+            "- UUID ПВЗ и города.\n\n"
+
+            "Возвращаются только активные ПВЗ."
+        ),
+        responses={
+            200: CDEKDeliveryPointSerializer(many=True),
+
+            401: OpenApiExample(
+                "Unauthorized",
+                value={
+                    "detail": "User not authenticated",
+                },
+            ),
+
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "You do not have permission",
+                },
+            ),
+        },
+    )
+    def list(self, request):
+        """
+        Возвращает список актуальных ПВЗ CDEK.
+        """
+
+        delivery_points = (
+            CDEKDeliveryPointService()
+            .get_delivery_points()
+        )
+
+        return Response(delivery_points)

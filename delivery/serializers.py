@@ -206,3 +206,54 @@ class CartDeliveryResultSerializer(serializers.Serializer):
         allow_null=True,
         required=False,
     )
+
+
+# Сериалайзер для получения списка ПВЗ СДЭКа
+
+class CDEKDeliveryPointSerializer(serializers.Serializer):
+    code = serializers.CharField()
+    name = serializers.CharField()
+    uuid = serializers.UUIDField()
+
+    type = serializers.CharField()
+    owner_code = serializers.CharField()
+
+    status = serializers.CharField()
+
+    is_handout = serializers.BooleanField()
+    is_reception = serializers.BooleanField()
+    allowed_cod = serializers.BooleanField()
+
+    country_code = serializers.CharField()
+    region_code = serializers.IntegerField()
+    region = serializers.CharField()
+
+    city_code = serializers.IntegerField()
+    city = serializers.CharField()
+
+    postal_code = serializers.CharField(
+        allow_null=True,
+        required=False,
+    )
+
+    address = serializers.CharField(
+        allow_null=True,
+        required=False,
+    )
+
+    address_full = serializers.CharField(
+        allow_null=True,
+        required=False,
+    )
+
+    longitude = serializers.FloatField(
+        allow_null=True,
+        required=False,
+    )
+
+    latitude = serializers.FloatField(
+        allow_null=True,
+        required=False,
+    )
+
+    city_uuid = serializers.UUIDField()

@@ -13,8 +13,9 @@ from delivery.adapters.base import DeliveryAdapter
 from delivery.client import CDEKClient
 from delivery.exceptions import CDEKBusinessError
 from delivery.routes.routes_cdek import CALCULATOR_ALL_TARIFFS, CALCULATOR_TARIFF_LIST, CALCULATOR_TARIFF, \
-    CITIES_SUGGEST, CDEK_CITIES
-from delivery.schemas.locations import CDEKCitiesSchema, CDEKCitiesErrorResponseSchema
+    CITIES_SUGGEST, CDEK_CITIES, DELIVERY_POINTS
+from delivery.schemas.locations import CDEKCitiesSchema, CDEKCitiesErrorResponseSchema, \
+    CDEKDeliveryPointsErrorResponseSchema, CDEKDeliveryPointSchema
 from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema, CDEKCitySchema, \
     CDEKCityErrorResponseSchema, TariffCalculationResponseSchema
 
@@ -420,6 +421,57 @@ class CDEKAdapter(DeliveryAdapter):
 
         raise CDEKBusinessError(
             operation="get_cities",
+            code=(
+                error_schema.errors[0].code
+                if error_schema.errors
+                else None
+            ),
+            message="; ".join(messages),
+            response_data=response,
+        )
+
+    def get_delivery_points(
+            self,
+            *,
+            country_code: str = "RU",
+    ) -> list[CDEKDeliveryPointSchema]:
+        """
+        Получение списка пунктов выдачи и приема CDEK.
+
+        По умолчанию возвращаются только пункты,
+        расположенные на территории России.
+        """
+
+        params = {
+            "country_code": country_code,
+        }
+
+        response = self.client.get(
+            DELIVERY_POINTS,
+            params=params,
+        )
+
+        if isinstance(response, list):
+            return [
+                CDEKDeliveryPointSchema.model_validate(
+                    delivery_point
+                )
+                for delivery_point in response
+            ]
+
+        error_schema = (
+            CDEKDeliveryPointsErrorResponseSchema.model_validate(
+                response
+            )
+        )
+
+        messages = [
+            error.message
+            for error in error_schema.errors
+        ]
+
+        raise CDEKBusinessError(
+            operation="get_delivery_points",
             code=(
                 error_schema.errors[0].code
                 if error_schema.errors
