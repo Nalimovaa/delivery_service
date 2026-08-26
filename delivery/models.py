@@ -40,12 +40,88 @@ class CdekDelivery(models.Model):
     )
 
     # информация для создания заказа в системе CDEK
-    cdek_office_code_from = models.CharField(max_length=255, blank=True,
-                                             null=True)  # Код офиса, из которого отправляется груз
-    cdek_office_code_to = models.CharField(max_length=255, blank=True,
-                                           null=True)  # Код офиса, в который отправляется груз
+    # Выбранный тариф и режим доставки
     tariff_code = models.IntegerField(blank=True, null=True)  # Код тарифа, используемого для доставки
+    delivery_mode = models.PositiveSmallIntegerField(
+        blank=True,
+        null=True,
+        verbose_name="Код режима доставки CDEK",
+    )
 
+    delivery_mode_name = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        verbose_name="Режим доставки CDEK",
+    )
+
+    # Пункты отправления / получения
+    # Пункт, куда клиент/продавец самостоятельно привозит отправление.
+    shipment_point = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        verbose_name="ПВЗ отправления CDEK",
+    )
+
+    # Соответствует delivery_point API CDEK.
+    # Пункт, в который CDEK доставляет отправление.
+    delivery_point = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        verbose_name="ПВЗ получения CDEK",
+    )
+
+    # Локация отправления
+    from_city = models.ForeignKey(
+        "delivery.CDEKCity",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="from_deliveries",
+        verbose_name="Город отправления CDEK",
+    )
+
+    from_address = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name="Адрес отправления",
+    )
+
+    from_postal_code = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        verbose_name="Почтовый индекс отправления",
+    )
+
+    # Локация получения
+    to_city = models.ForeignKey(
+        "delivery.CDEKCity",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="to_deliveries",
+        verbose_name="Город получения CDEK",
+    )
+
+    to_address = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name="Адрес получения",
+    )
+
+    to_postal_code = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        verbose_name="Почтовый индекс получения",
+    )
+
+    # Идентификаторы и стоимость
     # Уникальный идентификатор, присваиваемый до валидации заказа в системе CDEK. Этот идентификатор используется
     # для отслеживания заказа до его окончательного подтверждения.
     cdek_uuid = models.CharField(max_length=36, unique=True, null=True, blank=True)  # Уникальный идентификатор груза

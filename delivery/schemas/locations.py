@@ -138,3 +138,27 @@ class CDEKDeliveryPointsErrorResponseSchema(BaseModel):
     """Ответ API CDEK с ошибками."""
 
     errors: list[CDEKDeliveryPointsErrorSchema]
+
+
+# Pydantic-схема для ответа от CDEKAdapter.get_postalcodes()
+
+class CDEKPostalCodesResponseSchema(BaseModel):
+    """Почтовые индексы населенного пункта CDEK."""
+
+    code: int
+    postal_codes: list[str] = Field(
+        default_factory=list,
+    )
+
+
+class CDEKPostalCodesErrorSchema(BaseModel):
+    """Ошибка API СДЭК."""
+
+    code: str
+    message: str
+
+
+class CDEKPostalCodesErrorResponseSchema(BaseModel):
+    """Ответ API СДЭК с ошибками."""
+
+    errors: list[CDEKPostalCodesErrorSchema]

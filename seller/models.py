@@ -33,6 +33,16 @@ class Shop(models.Model):
         verbose_name="Страна магазина",
     )
 
+    address = models.CharField(
+        max_length=255,
+        verbose_name="Адрес отправления",
+    )
+
+    postal_code = models.CharField(
+        max_length=20,
+        verbose_name="Почтовый индекс отправления",
+    )
+
     # транспортная компания
     carrier = models.IntegerField(choices=DeliveryType.choices)
 
@@ -40,17 +50,17 @@ class Shop(models.Model):
         return self.name
 
 
-class ShopDeliverySetting(models.Model):
+class CDEKShopDeliverySetting(models.Model):
     shop = models.ForeignKey(
         Shop,
         on_delete=models.CASCADE,
-        related_name="delivery_settings",
+        related_name="cdek_delivery_settings",
     )
 
     tariff = models.ForeignKey(
         "delivery.CDEKTariff",
         on_delete=models.PROTECT,
-        related_name="shop_settings",
+        related_name="cdek_shop_settings",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)

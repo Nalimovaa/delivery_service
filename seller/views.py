@@ -1,13 +1,13 @@
 from rest_framework import viewsets
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
-
+import copy
 from delivery.factories.delivery import DeliveryFactory
 from seller.models import Shop, SellerRequest
-from seller.serializers import ShopSerializer, ShopDeliverySettingSerializer, ShopDeliverySettingReadSerializer, \
+from seller.serializers import ShopSerializer, ShopDeliverySettingSerializer, CDEKShopDeliverySettingReadSerializer, \
     SellerRequestSerializer, SellerRequestRejectSerializer
 from users.permissions import IsCustomAuthenticated, RolePermission
-from seller.services import ShopDeliverySettingService, SellerService, SellerRequestService
+from seller.services import CDEKShopDeliverySettingService, SellerService, SellerRequestService
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -44,6 +44,7 @@ class ShopViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             shop = serializer.save(owner=user)
 
+            DeliveryFactory.validate(shop)
             DeliveryFactory.initialize(shop)
 
     @extend_schema(
@@ -99,11 +100,17 @@ class ShopViewSet(viewsets.ModelViewSet):
         )
         serializer.is_valid(raise_exception=True)
 
-        shop = serializer.save()
+        with transaction.atomic():
+            shop = serializer.save()
 
-        if old_carrier != shop.carrier:
-            DeliveryFactory.cleanup(shop, old_carrier)
-            DeliveryFactory.initialize(shop)
+            DeliveryFactory.validate(shop)
+
+            if old_carrier != shop.carrier:
+                shop_for_cleanup = copy.copy(shop)
+                shop_for_cleanup.carrier = old_carrier
+
+                DeliveryFactory.cleanup(shop_for_cleanup)
+                DeliveryFactory.initialize(shop)
 
         return Response(serializer.data)
 
@@ -142,7 +149,7 @@ class ShopViewSet(viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class ShopDeliverySettingViewSet(viewsets.ViewSet):
+class CDEKShopDeliverySettingViewSet(viewsets.ViewSet):
     permission_classes = [
         IsCustomAuthenticated,
         RolePermission,
@@ -153,18 +160,18 @@ class ShopDeliverySettingViewSet(viewsets.ViewSet):
     @extend_schema(
         summary="Получить выбранные тарифы ЛК магазина",
         responses={
-            200: ShopDeliverySettingReadSerializer(many=True),
+            200: CDEKShopDeliverySettingReadSerializer(many=True),
         },
     )
     def list(self, request, shop_pk=None):
         shop = self.get_user_shop(request, shop_pk)
 
         settings = (
-            ShopDeliverySettingService()
+            CDEKShopDeliverySettingService()
             .get_shop_tariffs(shop)
         )
 
-        serializer = ShopDeliverySettingReadSerializer(
+        serializer = CDEKShopDeliverySettingReadSerializer(
             settings,
             many=True,
         )
@@ -187,7 +194,7 @@ class ShopDeliverySettingViewSet(viewsets.ViewSet):
         )
 
         try:
-            ShopDeliverySettingService().save(
+            CDEKShopDeliverySettingService().save(
                 shop=shop,
                 tariff_codes=serializer.validated_data["tariffs"],
             )
@@ -205,7 +212,7 @@ class ShopDeliverySettingViewSet(viewsets.ViewSet):
     def destroy(self, request, shop_pk=None):
         shop = self.get_user_shop(request, shop_pk)
 
-        ShopDeliverySettingService().clear(shop)
+        CDEKShopDeliverySettingService().clear(shop)
 
         return Response(status=204)
 

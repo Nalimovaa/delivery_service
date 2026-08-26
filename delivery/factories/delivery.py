@@ -7,7 +7,7 @@ from delivery.services.tariffs import CDEKTariffService, CDEKDeliveryOptionsServ
 from delivery.tasks.tariffs import sync_cdek_tariffs
 from delivery.tasks.locations import sync_cdek_cities, sync_cdek_delivery_points
 from seller.models import Shop
-from seller.services import ShopDeliverySettingService
+from seller.services import CDEKShopDeliverySettingService, CDEKShopValidationService
 from django.core.cache import cache
 from django.db import transaction
 
@@ -50,7 +50,7 @@ def cleanup_cdek(shop):
     """
 
     # удаляем персональные настройки магазина
-    ShopDeliverySettingService().clear(shop)
+    CDEKShopDeliverySettingService().clear(shop)
 
     has_other_cdek = Shop.objects.filter(
         carrier=DeliveryType.CDEK,
@@ -107,6 +107,11 @@ class DeliveryFactory:
         DeliveryType.CDEK: cleanup_cdek,
     }
 
+    # Обработчики валидации данных магазинов при создании.
+    _validation_handlers = {
+        DeliveryType.CDEK: CDEKShopValidationService,
+    }
+
     # Сервисы предварительного расчета доставки.
     #
     # Каждый сервис инкапсулирует особенности конкретной ТК:
@@ -123,6 +128,26 @@ class DeliveryFactory:
     _code_tariff_services = {
         DeliveryType.CDEK: CDEKCalculateDeliveryService,
     }
+
+    @classmethod
+    def validate(cls, shop: Shop):
+        """Валидирует данные магазина
+        в соответствии с выбранной службой доставки."""
+
+        validator_class = cls._validation_handlers.get(
+            shop.carrier,
+        )
+
+        if not validator_class:
+            return
+
+        validator_class().validate(
+            location_from=shop.location_from,
+            location_from_region=shop.location_from_region,
+            location_from_district=shop.location_from_district,
+            location_from_country=shop.location_from_country,
+            postal_code=shop.postal_code,
+        )
 
     @classmethod
     def initialize(cls, shop: Shop):

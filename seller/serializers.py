@@ -1,14 +1,28 @@
 from rest_framework import serializers
-from seller.models import Shop, ShopDeliverySetting, SellerRequest
+from seller.models import Shop, CDEKShopDeliverySetting, SellerRequest
 from rest_framework import serializers
 from delivery.serializers import CDEKTariffSerializer
 
 
+
 class ShopSerializer(serializers.ModelSerializer):
-    """Сериалайзрк для CRUD магазина"""
+    """Сериалайзер для CRUD магазина."""
+
     class Meta:
         model = Shop
-        fields = ['id', 'name', 'owner', 'legal_info',  "location_from", "carrier",]
+        fields = [
+            "id",
+            "name",
+            "owner",
+            "legal_info",
+            "location_from",
+            "location_from_region",
+            "location_from_district",
+            "location_from_country",
+            "address",
+            "postal_code",
+            "carrier",
+        ]
         read_only_fields = ["owner"]
 
 
@@ -20,7 +34,7 @@ class ShopDeliverySettingSerializer(serializers.Serializer):
     )
 
 
-class ShopDeliverySettingReadSerializer(
+class CDEKShopDeliverySettingReadSerializer(
     serializers.ModelSerializer
 ):
     """ Serializer для просмотра настроек кодов тарифов СДЕКа в ЛК продавца"""
@@ -29,7 +43,7 @@ class ShopDeliverySettingReadSerializer(
 
 
     class Meta:
-        model = ShopDeliverySetting
+        model = CDEKShopDeliverySetting
 
         fields = (
             "id",

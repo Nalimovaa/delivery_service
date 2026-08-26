@@ -2,7 +2,8 @@ from django.core.cache import cache
 
 from delivery.adapters.cdek import CDEKAdapter
 from delivery.models import CDEKCity, CDEKDeliveryPoint
-from delivery.schemas.locations import CDEKCitiesSchema, CDEKDeliveryPointSchema
+from delivery.schemas.locations import CDEKCitiesSchema, CDEKDeliveryPointSchema, CDEKPostalCodesResponseSchema
+from rest_framework.exceptions import ValidationError
 
 
 class CDEKCityService:
@@ -124,10 +125,93 @@ class CDEKCityService:
             [],
         )
 
+    def get_city(
+            self,
+            *,
+            city: str,
+            region: str,
+            sub_region: str | None = None,
+            country: str = "Россия",
+    ) -> CDEKCity | None:
+        """
+        Возвращает населенный пункт CDEK.
 
-from django.core.cache import cache
+        Сначала выполняется поиск в Redis.
+        Если Redis пуст — поиск выполняется в PostgreSQL.
+        """
 
+        city = city.strip()
+        region = region.strip()
+        country = country.strip()
 
+        if sub_region:
+            sub_region = sub_region.strip()
+
+        cached_cities = self.get_cached_cities()
+
+        if cached_cities:
+            matches = [
+                item
+                for item in cached_cities
+                if (
+                        item["city"].casefold() == city.casefold()
+                        and item["region"].casefold() == region.casefold()
+                        and item["country"].casefold() == country.casefold()
+                        and (
+                                sub_region is None
+                                or (
+                                        item["sub_region"]
+                                        and item["sub_region"].casefold()
+                                        == sub_region.casefold()
+                                )
+                        )
+                )
+            ]
+
+            if len(matches) == 1:
+                return CDEKCity.objects.filter(
+                    code=matches[0]["code"],
+                    is_active=True,
+                ).first()
+
+            if len(matches) > 1:
+                raise ValidationError(
+                    {
+                        "location_from": (
+                            "Найдено несколько населенных пунктов "
+                            "CDEK с указанными параметрами."
+                        )
+                    }
+                )
+
+        queryset = CDEKCity.objects.filter(
+            city__iexact=city,
+            region__iexact=region,
+            country__iexact=country,
+            is_active=True,
+        )
+
+        if sub_region:
+            queryset = queryset.filter(
+                sub_region__iexact=sub_region,
+            )
+
+        count = queryset.count()
+
+        if count == 1:
+            return queryset.first()
+
+        if count > 1:
+            raise ValidationError(
+                {
+                    "location_from": (
+                        "Найдено несколько населенных пунктов "
+                        "CDEK с указанными параметрами."
+                    )
+                }
+            )
+
+        return None
 
 class CDEKDeliveryPointService:
     """Отвечает за синхронизацию ПВЗ CDEK
@@ -348,3 +432,83 @@ class CDEKDeliveryPointService:
         )
 
         return delivery_points
+
+
+
+class CDEKPostalCodeService:
+    """
+    Сервис для получения почтовых индексов населенного пункта CDEK.
+
+    Получает индексы через API CDEK и кэширует результат
+    в Redis для повторного использования.
+    """
+
+    CACHE_KEY_PREFIX = "cdek:postal_codes"
+    CACHE_TIMEOUT = 60 * 60 * 24
+
+    def fetch_postalcodes(
+        self,
+        code: int,
+    ) -> CDEKPostalCodesResponseSchema:
+        """Получение почтовых индексов из API СДЭК."""
+
+        adapter = CDEKAdapter()
+
+        return adapter.get_postalcodes(
+            code=code,
+        )
+
+    def update_cache(
+        self,
+        code: int,
+        postal_codes: list[str],
+    ):
+        """Сохранение почтовых индексов в Redis."""
+
+        cache.set(
+            self.get_cache_key(code),
+            postal_codes,
+            timeout=self.CACHE_TIMEOUT,
+        )
+
+    def get_cache_key(
+        self,
+        code: int,
+    ) -> str:
+        """Формирование ключа Redis для населенного пункта."""
+
+        return (
+            f"{self.CACHE_KEY_PREFIX}:{code}"
+        )
+
+    def get_postalcodes(
+        self,
+        code: int,
+    ) -> list[str]:
+        """
+        Получение почтовых индексов населенного пункта.
+
+        Сначала выполняется поиск в Redis.
+        Если данных в кэше нет, выполняется запрос
+        к API CDEK и результат сохраняется в Redis.
+        """
+
+        cached_postal_codes = cache.get(
+            self.get_cache_key(code),
+        )
+
+        if cached_postal_codes is not None:
+            return cached_postal_codes
+
+        response = self.fetch_postalcodes(
+            code=code,
+        )
+
+        postal_codes = response.postal_codes
+
+        self.update_cache(
+            code=code,
+            postal_codes=postal_codes,
+        )
+
+        return postal_codes

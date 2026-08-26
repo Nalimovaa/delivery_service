@@ -19,11 +19,12 @@ CALCULATOR_TARIFF = "/calculator/tariff"
 CALCULATOR_TARIFF_LIST = "/calculator/tariffAndService"
 CALCULATOR_ALL_TARIFFS = "/calculator/alltariffs"
 
+CITIES_SUGGEST = "/location/suggest/cities"
+CDEK_POSTALCODES = "/location/postalcodes"
 DELIVERY_POINTS = "/deliverypoints"
 
-ORDERS = "/orders"
-ORDER = "/orders/{uuid}"
-CITIES_SUGGEST = "/location/suggest/cities"
+CDEK_ORDERS = "/orders"
+CDEK_ORDER_UUID = "/orders/{uuid}"
 
 ORDER_CLIENT_RETURN = "/orders/{uuid}/clientReturn"
 ORDER_REFUSAL = "/orders/{uuid}/refusal"

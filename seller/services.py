@@ -1,12 +1,16 @@
 from django.db import transaction
 from django.utils import timezone
+
+from delivery.adapters.cdek import CDEKAdapter
 from delivery.models import CDEKTariff
+from delivery.services.locations import CDEKCityService, CDEKPostalCodeService
 from delivery.services.tariffs import CDEKTariffService
-from seller.models import ShopDeliverySetting, Shop, SellerRequest, SellerRequestStatus
+from seller.models import CDEKShopDeliverySetting, Shop, SellerRequest, SellerRequestStatus
 from users.models import Role, UserRole
+from rest_framework.exceptions import ValidationError
 
 
-class ShopDeliverySettingService:
+class CDEKShopDeliverySettingService:
 
     CACHE_KEY = "cdek:tariffs"
 
@@ -37,11 +41,11 @@ class ShopDeliverySettingService:
         )
 
         # не сохраняем историю выбора кодов продавцом
-        ShopDeliverySetting.objects.filter(shop=shop).delete()
+        CDEKShopDeliverySetting.objects.filter(shop=shop).delete()
 
-        ShopDeliverySetting.objects.bulk_create(
+        CDEKShopDeliverySetting.objects.bulk_create(
             [
-                ShopDeliverySetting(
+                CDEKShopDeliverySetting(
                     shop=shop,
                     tariff=tariff,
                 )
@@ -56,14 +60,14 @@ class ShopDeliverySettingService:
         """
 
         return (
-            ShopDeliverySetting.objects
+            CDEKShopDeliverySetting.objects
             .filter(shop=shop)
             .select_related("tariff")
         )
 
     def clear(self, shop):
         """ Очистить настройки магазина"""
-        ShopDeliverySetting.objects.filter(
+        CDEKShopDeliverySetting.objects.filter(
             shop=shop
         ).delete()
 
@@ -192,3 +196,143 @@ class SellerRequestService:
         )
 
         return seller_request
+
+
+
+class CDEKShopValidationService:
+    """
+    Сервис валидации данных магазина для доставки CDEK.
+
+    Проверяет:
+    - населенный пункт;
+    - регион;
+    - район;
+    - страну;
+    - почтовый индекс.
+
+    Для существующего справочника сначала используется
+    CDEKCityService (Redis/PostgreSQL).
+
+    Если населенный пункт не найден в локальном справочнике,
+    выполняется прямой запрос к API CDEK. Это необходимо
+    при создании первого магазина CDEK, когда справочник
+    еще не был синхронизирован.
+    """
+
+    def __init__(self):
+        self.city_service = CDEKCityService()
+        self.postal_code_service = CDEKPostalCodeService()
+        self.adapter = CDEKAdapter()
+
+    def validate(
+        self,
+        *,
+        location_from: str,
+        location_from_region: str,
+        location_from_district: str | None,
+        location_from_country: str,
+        postal_code: str,
+    ) -> None:
+        """
+        Проверяет данные магазина для доставки CDEK.
+
+        Если населенный пункт или почтовый индекс
+        не соответствуют данным CDEK, выбрасывается ValidationError.
+        """
+
+        city = self.city_service.get_city(
+            city=location_from,
+            region=location_from_region,
+            sub_region=location_from_district,
+            country=location_from_country,
+        )
+
+        if city is None:
+            city = self._get_city_from_cdek(
+                city=location_from,
+                region=location_from_region,
+                sub_region=location_from_district,
+                country=location_from_country,
+            )
+
+        if city is None:
+            raise ValidationError(
+                {
+                    "location_from": (
+                        "Населенный пункт с указанными "
+                        "параметрами не найден в CDEK."
+                    )
+                }
+            )
+
+        postal_codes = self.postal_code_service.get_postalcodes(
+            code=city.code,
+        )
+
+        if postal_code.strip() not in postal_codes:
+            raise ValidationError(
+                {
+                    "postal_code": (
+                        "Почтовый индекс не соответствует "
+                        "населенному пункту CDEK."
+                    )
+                }
+            )
+
+    def _get_city_from_cdek(
+            self,
+            *,
+            city: str,
+            region: str,
+            sub_region: str | None,
+            country: str,
+    ):
+        """
+        Получает населенный пункт напрямую из API CDEK.
+
+        Используется как fallback, если населенный пункт
+        отсутствует в локальном справочнике.
+        """
+
+        try:
+            cities = self.adapter.get_cities(
+                country_codes="RU",
+                city=city.strip(),
+            )
+        except Exception:
+            return None
+
+        matches = [
+            item
+            for item in cities
+            if (
+                    item.city.casefold() == city.strip().casefold()
+                    and item.region.casefold()
+                    == region.strip().casefold()
+                    and item.country.casefold()
+                    == country.strip().casefold()
+                    and (
+                            sub_region is None
+                            or (
+                                    item.sub_region
+                                    and item.sub_region.casefold()
+                                    == sub_region.strip().casefold()
+                            )
+                    )
+            )
+        ]
+
+        if len(matches) == 1:
+            return matches[0]
+
+        if len(matches) > 1:
+            raise ValidationError(
+                {
+                    "location_from": (
+                        "Найдено несколько населенных пунктов "
+                        "CDEK с указанными параметрами."
+                    )
+                }
+            )
+
+        return None

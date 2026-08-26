@@ -5,7 +5,7 @@ from delivery.schemas.tariffs import (AvailableTariffsResponseSchema, TariffList
                                       CDEKLocationResultDTO, CalculateDeliveryResultDTO)
 from delivery.services.locations import CDEKCityService
 from order.models import CartItem
-from seller.models import ShopDeliverySetting
+from seller.models import CDEKShopDeliverySetting
 from django.db.models import Prefetch
 
 
@@ -277,7 +277,7 @@ class CDEKDeliveryOptionsService:
             .prefetch_related(
                 Prefetch(
                     "unique_product__product__shop__delivery_settings",
-                    queryset=ShopDeliverySetting.objects.select_related("tariff"),
+                    queryset=CDEKShopDeliverySetting.objects.select_related("tariff"),
                 )
             )
         )
@@ -536,7 +536,7 @@ class CDEKCalculateDeliveryService:
             .prefetch_related(
                 Prefetch(
                     "unique_product__product__shop__delivery_settings",
-                    queryset=ShopDeliverySetting.objects.select_related(
+                    queryset=CDEKShopDeliverySetting.objects.select_related(
                         "tariff"
                     ),
                 )

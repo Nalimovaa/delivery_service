@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from seller.models import Shop, ShopDeliverySetting, SellerRequest
+from seller.models import Shop, CDEKShopDeliverySetting, SellerRequest
 
 
 @admin.register(Shop)
@@ -13,6 +13,8 @@ class ShopAdmin(admin.ModelAdmin):
         "location_from_region",
         "location_from_district",
         "location_from_country",
+        "address",
+        "postal_code",
         "carrier",
     )
 
@@ -25,6 +27,8 @@ class ShopAdmin(admin.ModelAdmin):
         "location_from_region",
         "location_from_district",
         "location_from_country",
+        "address",
+        "postal_code",
         "carrier",
     )
 
@@ -37,8 +41,8 @@ class ShopAdmin(admin.ModelAdmin):
     )
 
 
-@admin.register(ShopDeliverySetting)
-class ShopDeliverySettingAdmin(admin.ModelAdmin):
+@admin.register(CDEKShopDeliverySetting)
+class CDEKShopDeliverySettingAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "shop",

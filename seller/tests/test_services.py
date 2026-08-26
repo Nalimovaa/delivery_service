@@ -7,7 +7,7 @@ from django.test import TestCase
 
 from delivery.enums import DeliveryType
 from delivery.models import CDEKTariff
-from seller.models import Shop, ShopDeliverySetting, SellerRequestStatus, SellerRequest
+from seller.models import Shop, CDEKShopDeliverySetting, SellerRequestStatus, SellerRequest
 from seller.services import ShopDeliverySettingService, SellerService, SellerRequestService
 from users.models import User, Role, UserRole
 
@@ -64,7 +64,7 @@ class TestShopDeliverySettingService(TestCase):
         )
 
         self.assertEqual(
-            ShopDeliverySetting.objects.count(),
+            CDEKShopDeliverySetting.objects.count(),
             1,
         )
 
@@ -86,7 +86,7 @@ class TestShopDeliverySettingService(TestCase):
     def test_get_shop_tariffs(self):
         """Проверяет получение списка тарифов, выбранных магазином."""
 
-        ShopDeliverySetting.objects.create(
+        CDEKShopDeliverySetting.objects.create(
             shop=self.shop,
             tariff=self.tariff,
         )
@@ -103,7 +103,7 @@ class TestShopDeliverySettingService(TestCase):
     def test_clear(self):
         """Проверяет удаление всех сохраненных тарифов магазина."""
 
-        ShopDeliverySetting.objects.create(
+        CDEKShopDeliverySetting.objects.create(
             shop=self.shop,
             tariff=self.tariff,
         )
@@ -113,7 +113,7 @@ class TestShopDeliverySettingService(TestCase):
         )
 
         self.assertEqual(
-            ShopDeliverySetting.objects.count(),
+            CDEKShopDeliverySetting.objects.count(),
             0,
         )
 
