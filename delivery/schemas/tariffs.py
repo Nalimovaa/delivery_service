@@ -71,7 +71,7 @@ class ServiceSchema(BaseModel):
 
 
 class TariffResultSchema(BaseModel):
-    delivery_sum: Decimal  # Изменено на Decimal
+    delivery_sum: Decimal
     period_min: int
     period_max: int
     delivery_date_range: DeliveryDateRangeSchema | None = None  # Современный синтаксис вместо Optional
@@ -102,11 +102,13 @@ class DeliveryDateRangeDTO(BaseModel):
 class DeliveryOptionDTO(BaseModel):
     tariff_code: int
     tariff_name: str
+    delivery_mode: int
+    delivery_mode_name: str
     delivery_sum: Decimal
     period_min: int
     period_max: int
     delivery_date_range: DeliveryDateRangeDTO | None = None
-    services: list[dict] = []
+    services: list[dict] = Field(default_factory=list)
     total_sum: Decimal
     currency: str
 
@@ -188,6 +190,8 @@ class CalculateDeliveryResultDTO(BaseModel):
     # Тариф, выбранный пользователем
     tariff_code: int | None = None
     tariff_name: str | None = None
+    delivery_mode: int | None = None
+    delivery_mode_name: str | None = None
 
     # Сумма товаров в корзине магазина (без доставки)
     products_sum: Decimal | None = None
@@ -215,6 +219,8 @@ class ShopCalculateDeliveryResultDTO(BaseModel):
 
     tariff_code: int | None = None
     tariff_name: str | None = None
+    delivery_mode: int | None = None
+    delivery_mode_name: str | None = None
 
     calculation: TariffCalculationResponseSchema | None = None
     error: str | None = None

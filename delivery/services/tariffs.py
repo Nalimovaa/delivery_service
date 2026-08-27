@@ -276,7 +276,7 @@ class CDEKDeliveryOptionsService:
             )
             .prefetch_related(
                 Prefetch(
-                    "unique_product__product__shop__delivery_settings",
+                    "unique_product__product__shop__cdek_delivery_settings",
                     queryset=CDEKShopDeliverySetting.objects.select_related("tariff"),
                 )
             )
@@ -357,7 +357,7 @@ class CDEKDeliveryOptionsService:
 
         # проверяем наличие у магазина настроенных тарифов доставки
         delivery_settings = list(
-            shop.delivery_settings.all()
+            shop.cdek_delivery_settings.all()
         )
 
         if not delivery_settings:
@@ -438,14 +438,20 @@ class CDEKDeliveryOptionsService:
         # Коды тарифов, которые разрешены в настройках магазина: allowed_codes = {121, 59}
         allowed_codes = {
             setting.tariff.tariff_code
-            for setting in shop.delivery_settings.all()
+            for setting in shop.cdek_delivery_settings.all()
         }
 
-        # Названия тарифов из БД: {121: "Экономичная посылка", 59: "Посылка склад-склад"}
-        tariff_names = {
-            tariff.tariff_code: tariff.tariff_name
+        # Получаем из БД только необходимые поля тарифа.
+        tariffs = {
+            tariff["tariff_code"]: tariff
             for tariff in CDEKTariff.objects.filter(
-                tariff_code__in=allowed_codes
+                tariff_code__in=allowed_codes,
+                is_active=True,
+            ).values(
+                "tariff_code",
+                "tariff_name",
+                "delivery_mode",
+                "delivery_mode_name",
             )
         }
 
@@ -460,16 +466,23 @@ class CDEKDeliveryOptionsService:
             if code not in allowed_codes: # code = [121, 59, 136] сравниваем с allowed_codes = {121, 59}
                 continue
 
-            # tariff_item — это один объект TariffItemSchema
-            # а tariff_item.result - это объект TariffResultSchema, содержащий информацию о стоимости и сроках доставки для данного тарифа из API СДЕКа
+            # Получаем информацию о тарифе из БД.
+            tariff = tariffs.get(code)
+
+            # Если тариф есть в ответе CDEK,
+            # но отсутствует среди активных тарифов БД,
+            # пропускаем его.
+            if tariff is None:
+                continue
+
+            # Результат расчета стоимости от CDEK.
             result = tariff_item.result
 
             options.append({
                 "tariff_code": code,
-                "tariff_name": tariff_names.get(
-                    code,
-                    f"Тариф {code}",
-                ),
+                "tariff_name": tariff["tariff_name"],
+                "delivery_mode": tariff["delivery_mode"],
+                "delivery_mode_name": tariff["delivery_mode_name"],
                 "delivery_sum": result.delivery_sum,
                 "period_min": result.period_min,
                 "period_max": result.period_max,
@@ -535,7 +548,7 @@ class CDEKCalculateDeliveryService:
             )
             .prefetch_related(
                 Prefetch(
-                    "unique_product__product__shop__delivery_settings",
+                    "unique_product__product__shop__cdek_delivery_settings",
                     queryset=CDEKShopDeliverySetting.objects.select_related(
                         "tariff"
                     ),
@@ -634,7 +647,7 @@ class CDEKCalculateDeliveryService:
 
         # 5. Получаем настройки доставки магазина
         delivery_settings = list(
-            shop.delivery_settings.select_related("tariff")
+            shop.cdek_delivery_settings.select_related("tariff")
         )
 
         if not delivery_settings:
@@ -696,6 +709,8 @@ class CDEKCalculateDeliveryService:
             unique_product_ids=unique_product_ids,
             tariff_code=tariff_code,
             tariff_name=selected_setting.tariff.tariff_name,
+            delivery_mode=selected_setting.tariff.delivery_mode,
+            delivery_mode_name=selected_setting.tariff.delivery_mode_name,
             products_sum=products_sum,
             delivery_sum=response.total_sum,
             calculation=response,

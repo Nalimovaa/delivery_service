@@ -234,6 +234,8 @@ class DeliveryFacade:
                 total_sum=total_sum,
                 tariff_code=result.tariff_code,
                 tariff_name=result.tariff_name,
+                delivery_mode=result.delivery_mode,
+                delivery_mode_name=result.delivery_mode_name,
                 calculation=result.calculation,
                 error=result.error,
             )
