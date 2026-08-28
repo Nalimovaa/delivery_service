@@ -6,6 +6,7 @@ from delivery.services.locations import CDEKCityService, CDEKDeliveryPointServic
 from delivery.services.tariffs import CDEKTariffService, CDEKDeliveryOptionsService, CDEKCalculateDeliveryService
 from delivery.tasks.tariffs import sync_cdek_tariffs
 from delivery.tasks.locations import sync_cdek_cities, sync_cdek_delivery_points
+from order.services import CDEKOrderService
 from seller.models import Shop
 from seller.services import CDEKShopDeliverySettingService, CDEKShopValidationService
 from django.core.cache import cache
@@ -129,6 +130,11 @@ class DeliveryFactory:
         DeliveryType.CDEK: CDEKCalculateDeliveryService,
     }
 
+    # Сервисы регистрации заказа в системах транспортных компаний
+    _order_services = {
+        DeliveryType.CDEK: CDEKOrderService,
+    }
+
     @classmethod
     def validate(cls, shop: Shop):
         """Валидирует данные магазина
@@ -203,6 +209,18 @@ class DeliveryFactory:
         if not service_class:
             raise NotImplementedError(
                 f"Сервис расчета доставки по коду тарифа для carrier={shop.carrier} не реализован"
+            )
+
+        return service_class()
+
+    @classmethod
+    def get_order_service(cls, shop: Shop):
+        """Возвращает сервис регистрации заказа в системе транспортной компании"""
+        service_class = cls._order_services.get(shop.carrier)
+
+        if not service_class:
+            raise NotImplementedError(
+                f"Сервис регистрации заказа для carrier={shop.carrier} не реализован"
             )
 
         return service_class()
