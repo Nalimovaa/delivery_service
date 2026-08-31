@@ -433,6 +433,31 @@ class CDEKDeliveryPointService:
 
         return delivery_points
 
+    def get_delivery_point(
+            self,
+            code: str,
+    ):
+        """
+        Возвращает активный пункт CDEK.
+
+        Сначала Redis, затем PostgreSQL.
+        """
+
+        delivery_points = self.get_delivery_points()
+
+        for point in delivery_points:
+            if str(point["code"]) == str(code):
+                return point
+
+        raise ValidationError(
+            {
+                "delivery_point": (
+                    "Выбранный пункт CDEK "
+                    "не найден или неактивен."
+                )
+            }
+        )
+
 
 
 class CDEKPostalCodeService:
@@ -512,3 +537,162 @@ class CDEKPostalCodeService:
         )
 
         return postal_codes
+
+
+class CDEKLocationValidationService:
+    """
+    Сервис валидации данных локации для доставки CDEK.
+
+    Может использоваться для валидации данных:
+    - магазина;
+    - покупателя.
+
+    Проверяет переданные данные:
+    - населенный пункт;
+    - регион;
+    - район;
+    - страну;
+    - почтовый индекс;
+    - ПВЗ.
+
+    Сервис не определяет, какие поля должны быть
+    заполнены одновременно. Он проверяет только те
+    данные, которые были переданы.
+    """
+
+    def __init__(self):
+        self.city_service = CDEKCityService()
+        self.postal_code_service = CDEKPostalCodeService()
+        self.delivery_point_service = CDEKDeliveryPointService()
+        self.adapter = CDEKAdapter()
+
+    def validate(
+            self,
+            *,
+            location: str| None,
+            location_region: str| None,
+            location_district: str | None,
+            location_country: str| None,
+            postal_code: str| None,
+            delivery_point: str | None,
+    ) -> None:
+        """
+        Проверяет переданные данные локации.
+
+        Каждое поле проверяется только если оно передано.
+        Взаимоисключающая логика находится на уровне
+        сервиса создания отправления.
+        """
+        if location:
+            if not postal_code:
+                raise ValidationError(
+                    {
+                        "postal_code": (
+                            "Почтовый индекс обязателен "
+                            "для проверки населенного пункта."
+                        )
+                    }
+                )
+
+            city = self.city_service.get_city(
+                city=location,
+                region=location_region,
+                sub_region=location_district,
+                country=location_country,
+            )
+
+            if city is None:
+                city = self._get_city_from_cdek(
+                    city=location,
+                    region=location_region,
+                    sub_region=location_district,
+                    country=location_country,
+                )
+
+            if city is None:
+                raise ValidationError(
+                    {
+                        "location_from": (
+                            "Населенный пункт с указанными "
+                            "параметрами не найден в CDEK."
+                        )
+                    }
+                )
+
+            postal_codes = self.postal_code_service.get_postalcodes(
+                code=city.code,
+            )
+
+            if postal_code.strip() not in postal_codes:
+                raise ValidationError(
+                    {
+                        "postal_code": (
+                            "Почтовый индекс не соответствует "
+                            "населенному пункту CDEK."
+                        )
+                    }
+                )
+
+        # Если передан ПВЗ, проверяем его отдельно.
+        if delivery_point:
+            self.delivery_point_service.get_delivery_point(
+                delivery_point,
+            )
+
+    def _get_city_from_cdek(
+            self,
+            *,
+            city: str,
+            region: str,
+            sub_region: str | None,
+            country: str,
+    ):
+        """
+        Получает населенный пункт напрямую из API CDEK.
+
+        Используется как fallback, если населенный пункт
+        отсутствует в локальном справочнике.
+        """
+
+        try:
+            cities = self.adapter.get_cities(
+                country_codes="RU",
+                city=city.strip(),
+            )
+        except Exception:
+            return None
+
+        matches = [
+            item
+            for item in cities
+            if (
+                    item.city.casefold() == city.strip().casefold()
+                    and item.region.casefold()
+                    == region.strip().casefold()
+                    and item.country.casefold()
+                    == country.strip().casefold()
+                    and (
+                            sub_region is None
+                            or (
+                                    item.sub_region
+                                    and item.sub_region.casefold()
+                                    == sub_region.strip().casefold()
+                            )
+                    )
+            )
+        ]
+
+        if len(matches) == 1:
+            return matches[0]
+
+        if len(matches) > 1:
+            raise ValidationError(
+                {
+                    "location_from": (
+                        "Найдено несколько населенных пунктов "
+                        "CDEK с указанными параметрами."
+                    )
+                }
+            )
+
+        return None

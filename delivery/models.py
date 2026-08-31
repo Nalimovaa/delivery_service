@@ -73,52 +73,86 @@ class CdekDelivery(models.Model):
         verbose_name="ПВЗ получения CDEK",
     )
 
-    # Локация отправления
-    from_city = models.ForeignKey(
-        "delivery.CDEKCity",
-        on_delete=models.PROTECT,
+    # Локация отправления, заполняется при delivery_mod "От двери"
+    location_from = models.CharField(
+        max_length=255,
         blank=True,
         null=True,
-        related_name="from_deliveries",
-        verbose_name="Город отправления CDEK",
+        verbose_name="Город отправления магазина", )
+
+    location_from_region = models.CharField(
+        max_length=255,
+        verbose_name="Область/регион магазина",
     )
 
-    from_address = models.CharField(
+    location_from_district = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name="Район магазина",
+    )
+
+    location_from_country = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        default="Россия",
+        verbose_name="Страна магазина",
+    )
+
+    address_from = models.CharField(
         max_length=255,
         blank=True,
         null=True,
         verbose_name="Адрес отправления",
     )
 
-    from_postal_code = models.CharField(
+    postal_code_from = models.CharField(
         max_length=20,
         blank=True,
         null=True,
         verbose_name="Почтовый индекс отправления",
     )
 
-    # Локация получения
-    to_city = models.ForeignKey(
-        "delivery.CDEKCity",
-        on_delete=models.PROTECT,
-        blank=True,
-        null=True,
-        related_name="to_deliveries",
-        verbose_name="Город получения CDEK",
-    )
-
-    to_address = models.CharField(
+    # Локация получения, заполняется при delivery_mod "До двери"
+    location_to = models.CharField(
         max_length=255,
         blank=True,
         null=True,
-        verbose_name="Адрес получения",
+        verbose_name="Город получателя", )
+
+    location_to_region = models.CharField(
+        max_length=255,
+        verbose_name="Область/регион получателя",
     )
 
-    to_postal_code = models.CharField(
+    location_to_district = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name="Район получателя",
+    )
+
+    location_to_country = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        default="Россия",
+        verbose_name="Страна получателя",
+    )
+
+    address_to = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name="Адрес получателя",
+    )
+
+    postal_code_to = models.CharField(
         max_length=20,
         blank=True,
         null=True,
-        verbose_name="Почтовый индекс получения",
+        verbose_name="Почтовый индекс получателя",
     )
 
     # Идентификаторы и стоимость

@@ -2,13 +2,13 @@
 Для поддержки нескольких служб доставки.
 """
 from delivery.models import DeliveryType, CDEKTariff, CDEKCity, CDEKDeliveryPoint
-from delivery.services.locations import CDEKCityService, CDEKDeliveryPointService
+from delivery.services.locations import CDEKCityService, CDEKDeliveryPointService, CDEKLocationValidationService
 from delivery.services.tariffs import CDEKTariffService, CDEKDeliveryOptionsService, CDEKCalculateDeliveryService
 from delivery.tasks.tariffs import sync_cdek_tariffs
 from delivery.tasks.locations import sync_cdek_cities, sync_cdek_delivery_points
 from order.services import CDEKOrderService
 from seller.models import Shop
-from seller.services import CDEKShopDeliverySettingService, CDEKShopValidationService
+from seller.services import CDEKShopDeliverySettingService
 from django.core.cache import cache
 from django.db import transaction
 
@@ -110,7 +110,7 @@ class DeliveryFactory:
 
     # Обработчики валидации данных магазинов при создании.
     _validation_handlers = {
-        DeliveryType.CDEK: CDEKShopValidationService,
+        DeliveryType.CDEK: CDEKLocationValidationService,
     }
 
     # Сервисы предварительного расчета доставки.
@@ -148,11 +148,12 @@ class DeliveryFactory:
             return
 
         validator_class().validate(
-            location_from=shop.location_from,
-            location_from_region=shop.location_from_region,
-            location_from_district=shop.location_from_district,
-            location_from_country=shop.location_from_country,
+            location=shop.location_from,
+            location_region=shop.location_from_region,
+            location_district=shop.location_from_district,
+            location_country=shop.location_from_country,
             postal_code=shop.postal_code,
+            delivery_point=shop.delivery_point,
         )
 
     @classmethod

@@ -46,6 +46,13 @@ class Shop(models.Model):
     # транспортная компания
     carrier = models.IntegerField(choices=DeliveryType.choices)
 
+    delivery_point = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        verbose_name="ПВЗ отправления ТК",
+    )
+
     def __str__(self):
         return self.name
 

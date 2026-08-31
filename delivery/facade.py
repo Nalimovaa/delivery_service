@@ -405,25 +405,34 @@ class DeliveryFacade:
                     f"Магазин с id={shop_result.shop_id} "
                     f"не найден в корзине."
                 )
+
+            # Повторно проверяем данные магазина в соответствии с выбранной ТК.
+            DeliveryFactory.validate(shop)
+
             order_delivery = OrderDelivery.objects.create(
                 order=order,
                 shop=shop,
                 delivery_type=shop.carrier,
             )
-            # Получаем сервис регистрации заказа
-            # для соответствующей транспортной компании.
-            order_service = DeliveryFactory.get_order_service(
-                shop,
-            )
+
+            # 9. Передаем создание специфичных данных конкретной транспортной компании.
+            order_service = DeliveryFactory.get_order_service(shop)
+
+            # order_service.create_delivery(
+            #     order_delivery=order_delivery,
+            #     shop_result=shop_result,
+            #     user=user,
+            #     **kwargs,
+            # )
 
     def get_status(self, delivery_id):
         """
         Получение текущего статуса доставки.
         """
-        return self.adapter.get_status(delivery_id)
+        raise NotImplementedError
 
     def cancel_delivery(self, delivery_id):
         """
         Отмена отправления.
         """
-        return self.adapter.cancel_delivery(delivery_id)
+        raise NotImplementedError

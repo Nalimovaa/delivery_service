@@ -16,6 +16,7 @@ class ShopAdmin(admin.ModelAdmin):
         "address",
         "postal_code",
         "carrier",
+        "delivery_point",
     )
 
     search_fields = (
@@ -30,6 +31,7 @@ class ShopAdmin(admin.ModelAdmin):
         "address",
         "postal_code",
         "carrier",
+        "delivery_point",
     )
 
     autocomplete_fields = (
