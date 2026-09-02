@@ -50,7 +50,7 @@ class Shop(models.Model):
         max_length=20,
         blank=True,
         null=True,
-        verbose_name="ПВЗ отправления ТК",
+        verbose_name="ПВЗ или постамат отправления ТК",
     )
 
     def __str__(self):

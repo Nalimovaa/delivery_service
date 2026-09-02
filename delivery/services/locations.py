@@ -569,11 +569,11 @@ class CDEKLocationValidationService:
     def validate(
             self,
             *,
-            location: str| None,
-            location_region: str| None,
+            location: str | None,
+            location_region: str | None,
             location_district: str | None,
-            location_country: str| None,
-            postal_code: str| None,
+            location_country: str | None,
+            postal_code: str | None,
             delivery_point: str | None,
     ) -> None:
         """

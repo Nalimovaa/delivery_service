@@ -215,7 +215,7 @@ class DeliveryFactory:
         return service_class()
 
     @classmethod
-    def get_order_service(cls, shop: Shop):
+    def get_order_service(cls, shop: Shop, user):
         """Возвращает сервис регистрации заказа в системе транспортной компании"""
         service_class = cls._order_services.get(shop.carrier)
 
@@ -224,4 +224,4 @@ class DeliveryFactory:
                 f"Сервис регистрации заказа для carrier={shop.carrier} не реализован"
             )
 
-        return service_class()
+        return service_class(user=user)

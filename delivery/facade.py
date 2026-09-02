@@ -265,6 +265,7 @@ class DeliveryFacade:
             self,
             user,
             selected_tariffs: dict[int, int],
+            delivery_data: dict[int, dict],
             **kwargs,
     ):
         """
@@ -281,6 +282,23 @@ class DeliveryFacade:
         7. Создание OrderProduct.
         8. Создание OrderDelivery для каждого магазина.
         9. Передача отправления в сервис соответствующей ТК.
+
+        {
+            "selected_tariffs": {
+                "1": 137,
+                "4": 121
+            },
+            "delivery_data": {
+                "1": {
+                    "address_to": "ул. Стара Загора, д. 130",
+                    "postal_code_to": "443114"
+                },
+                "4": {
+                    "delivery_point": "SAM12"
+                }
+            }
+        }
+
         """
 
         # 1. Получаем корзину пользователя.
@@ -415,15 +433,28 @@ class DeliveryFacade:
                 delivery_type=shop.carrier,
             )
 
-            # 9. Передаем создание специфичных данных конкретной транспортной компании.
-            order_service = DeliveryFactory.get_order_service(shop)
+            shop_delivery_data = delivery_data.get(
+                shop_result.shop_id
+            )
 
-            # order_service.create_delivery(
-            #     order_delivery=order_delivery,
-            #     shop_result=shop_result,
-            #     user=user,
-            #     **kwargs,
-            # )
+            if shop_delivery_data is None:
+                raise ValidationError(
+                    {
+                        "delivery_data": (
+                            f"Не указаны данные доставки "
+                            f"для магазина «{shop.name}»."
+                        )
+                    }
+                )
+
+            # 9. Передаем создание специфичных данных конкретной транспортной компании.
+            order_service = DeliveryFactory.get_order_service(shop, user)
+
+            order_service._create_cdek_delivery(
+                order_delivery=order_delivery,
+                shop_result=shop_result,
+                delivery_data=shop_delivery_data
+            )
 
     def get_status(self, delivery_id):
         """

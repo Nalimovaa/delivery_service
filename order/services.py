@@ -1,5 +1,3 @@
-from django.db import transaction
-
 from delivery.enums import CDEKDeliveryMode
 from delivery.models import OrderDelivery, CdekDelivery
 from delivery.schemas.tariffs import ShopCalculateDeliveryResultDTO
@@ -8,7 +6,17 @@ from rest_framework.exceptions import ValidationError
 
 
 class CDEKOrderService:
+    """ Сервис формирования данных доставки CDEK для созданного OrderDelivery.
+    Режим доставки определяется выбранным тарифом и приходит в shop_result.
+    Пользователь не передает delivery_mode повторно.
+    В зависимости от режима определяется,
+    какие данные нужны со стороны магазина и покупателя:
+    - адрес;
+    - ПВЗ;
+    - постамат.
+    """
 
+    # Откуда забирается отправление.
     DOOR_FROM_MODES = {
         CDEKDeliveryMode.DOOR_TO_DOOR,
         CDEKDeliveryMode.DOOR_TO_WAREHOUSE,
@@ -27,6 +35,7 @@ class CDEKOrderService:
         CDEKDeliveryMode.POSTAMAT_TO_POSTAMAT,
     }
 
+    # Куда доставляется отправление.
     DOOR_TO_MODES = {
         CDEKDeliveryMode.DOOR_TO_DOOR,
         CDEKDeliveryMode.WAREHOUSE_TO_DOOR,
@@ -55,8 +64,19 @@ class CDEKOrderService:
         *,
         order_delivery: OrderDelivery,
         shop_result: ShopCalculateDeliveryResultDTO,
-        delivery_data: dict,
+        delivery_data: dict[int, dict],
     ) -> CdekDelivery:
+        """
+        "delivery_data": {
+        "1": {
+            "address_to": "ул. Стара Загора, д. 130",
+            "postal_code_to": "443114"
+        },
+        "4": {
+            "delivery_point": "SAM12"
+        }
+    }
+        """
 
         if shop_result.tariff_code is None:
             raise ValidationError(
@@ -102,7 +122,28 @@ class CDEKOrderService:
             delivery_mode: int,
             shop,
     ):
+        """ Заполняет данные отправителя.
+        Данные магазина полностью берутся из Shop.
+        Для режима "от двери":
+        - город;
+        - регион;
+        - район;
+        - страна;
+        - адрес;
+        - индекс.
+        Для режима "от ПВЗ/склада/постамата":
+        - код пункта отправления.
+        """
         if delivery_mode in self.DOOR_FROM_MODES:
+            # Полностью валидируем данные магазина.
+            self.location_validator.validate(
+                location=shop.location_from,
+                location_region=shop.location_from_region,
+                location_district=shop.location_from_district,
+                location_country=shop.location_from_country,
+                postal_code=shop.postal_code,
+                delivery_point=None
+            )
             cdek_delivery.location_from = shop.location_from
             cdek_delivery.location_from_region = (
                 shop.location_from_region
@@ -113,22 +154,24 @@ class CDEKOrderService:
             cdek_delivery.location_from_country = (
                 shop.location_from_country
             )
-            cdek_delivery.address_from = shop.address_from
+            cdek_delivery.address_from = shop.address
             cdek_delivery.postal_code_from = shop.postal_code
 
             return
 
-        if delivery_mode in self.WAREHOUSE_FROM_MODES:
-            # Здесь должен быть код ПВЗ/склада отправления,
-            # если он хранится у магазина.
-            cdek_delivery.shipment_point = shop.shipment_point
-
-            return
-
-        if delivery_mode in self.POSTAMAT_FROM_MODES:
-            # Здесь аналогично нужен выбранный
-            # постамат отправления.
-            cdek_delivery.shipment_point = shop.shipment_point
+        if delivery_mode in (
+                self.WAREHOUSE_FROM_MODES
+                | self.POSTAMAT_FROM_MODES
+        ):
+            self.location_validator.validate(
+                location=None,
+                location_region=None,
+                location_district=None,
+                location_country=None,
+                postal_code=None,
+                delivery_point=shop.delivery_point
+            )
+            cdek_delivery.shipment_point = shop.delivery_point
 
             return
 
@@ -140,39 +183,64 @@ class CDEKOrderService:
     def _fill_to(
             self,
             *,
-            cdek_delivery,
-            delivery_mode,
-            delivery_data,
+            cdek_delivery: CdekDelivery,
+            delivery_mode: int,
+            delivery_data: dict,
     ):
+        """ Заполняет данные получателя.
+        Для доставки до двери:
+        - город;
+        - регион;
+        - район;
+        - страна берутся из User;
+        - адрес и почтовый индекс берутся из delivery_data.
+        Для доставки в ПВЗ/постамат:
+        - код ПВЗ берется из delivery_data;
+        - город и адрес определяются по самому ПВЗ. """
+
+        # Получение до двери
         if delivery_mode in self.DOOR_TO_MODES:
+            postal_code = delivery_data.get("postal_code_to")
+            address = delivery_data.get("address_to")
+
+            if not postal_code:
+                raise ValidationError(
+                    {
+                        "postal_code_to": (
+                            "Почтовый индекс обязателен "
+                            "для доставки до двери."
+                        )
+                    }
+                )
+
+            if not address:
+                raise ValidationError(
+                    {
+                        "address_to": (
+                            "Адрес обязателен "
+                            "для доставки до двери."
+                        )
+                    }
+                )
+
+            # Валидируем город пользователя + переданный индекс.
             self.location_validator.validate(
-                location=delivery_data["location_to"],
-                location_region=delivery_data["location_to_region"],
-                location_district=delivery_data.get(
-                    "location_to_district"
-                ),
-                location_country=delivery_data[
-                    "location_to_country"
-                ],
-                postal_code=delivery_data.get(
-                    "postal_code_to"
-                ),
+                location=self.user.location_to,
+                location_region=self.user.location_to_region,
+                location_district=self.user.location_to_district,
+                location_country=self.user.location_to_country,
+                postal_code=delivery_data.get("postal_code_to"),
+                delivery_point=None
             )
 
-            cdek_delivery.location_to = (
-                delivery_data["location_to"]
-            )
-            cdek_delivery.location_to_region = (
-                delivery_data["location_to_region"]
-            )
-            cdek_delivery.location_to_district = (
-                delivery_data.get("location_to_district")
-            )
-            cdek_delivery.location_to_country = (
-                delivery_data["location_to_country"]
-            )
+            # Город и регион берем из User.
+            cdek_delivery.location_to = self.user.location_to
+            cdek_delivery.location_to_region = self.user.location_to_region
+            cdek_delivery.location_to_district = self.user.location_to_district
+            cdek_delivery.location_to_country = self.user.location_to_country
+            # Адрес и индекс пользователь указал непосредственно для этого заказа.
             cdek_delivery.address_to = (
-                delivery_data["address_to"]
+                delivery_data.get("address_to")
             )
             cdek_delivery.postal_code_to = (
                 delivery_data.get("postal_code_to")
@@ -180,117 +248,31 @@ class CDEKOrderService:
 
             return
 
-        if delivery_mode in self.WAREHOUSE_TO_MODES:
-            self._set_delivery_point(
-                cdek_delivery=cdek_delivery,
-                delivery_data=delivery_data,
-            )
-            return
-
-        if delivery_mode in self.POSTAMAT_TO_MODES:
-            self._set_delivery_point(
-                cdek_delivery=cdek_delivery,
-                delivery_data=delivery_data,
-            )
-            return
-
-    def _validate_door_delivery_data(
-            self,
-            delivery_data: dict,
-    ):
-        required_fields = (
-            "location_to",
-            "location_to_region",
-            "location_to_country",
-            "address_to",
-        )
-
-        missing = [
-            field
-            for field in required_fields
-            if not delivery_data.get(field)
-        ]
-
-        if missing:
-            raise ValidationError(
-                {
-                    field: "Поле обязательно для доставки до двери."
-                    for field in missing
-                }
-            )
-
-        if delivery_data.get("delivery_point"):
-            raise ValidationError(
-                "Для доставки до двери нельзя указывать "
-                "delivery_point."
-            )
-
-    def _set_delivery_point(
-            self,
-            *,
-            cdek_delivery,
-            delivery_data,
-    ):
-        delivery_point = delivery_data.get(
-            "delivery_point"
-        )
-
-        if not delivery_point:
-            raise ValidationError(
-                {
-                    "delivery_point": (
-                        "Необходимо выбрать пункт "
-                        "доставки CDEK."
-                    )
-                }
-            )
-
-        point = (
-            self.delivery_point_service
-            .get_delivery_point(delivery_point)
-        )
-
-        if point is None:
-            raise ValidationError(
-                {
-                    "delivery_point": (
-                        "Выбранный пункт CDEK не найден "
-                        "или недоступен."
-                    )
-                }
-            )
-
-        cdek_delivery.delivery_point = delivery_point
-
-    def _validate_delivery_point_data(
-            self,
-            delivery_data: dict,
-    ):
-        if not delivery_data.get("delivery_point"):
-            raise ValidationError(
-                {
-                    "delivery_point": (
-                        "Необходимо выбрать пункт доставки CDEK."
-                    )
-                }
-            )
-
-        address_fields = (
-            "location_to",
-            "location_to_region",
-            "location_to_district",
-            "location_to_country",
-            "address_to",
-            "postal_code_to",
-        )
-
-        if any(
-                delivery_data.get(field)
-                for field in address_fields
+        # Получение в ПВЗ / на склад
+        if delivery_mode in (
+                self.WAREHOUSE_TO_MODES
+                | self.POSTAMAT_TO_MODES
         ):
-            raise ValidationError(
-                "Для доставки в пункт CDEK нельзя указывать "
-                "адрес доставки."
+            delivery_point = delivery_data.get("delivery_point")
+
+            if not delivery_point:
+                raise ValidationError(
+                    {
+                        "delivery_point": (
+                            "Необходимо выбрать " "пункт получения CDEK."
+                        )
+                    }
+                )
+            self.location_validator.validate(
+                location=None,
+                location_region=None,
+                location_district=None,
+                location_country=None,
+                postal_code=None,
+                delivery_point= delivery_data.get("delivery_point")
             )
 
-
+            cdek_delivery.delivery_point = (
+                delivery_data.get("delivery_point")
+            )
+            return
