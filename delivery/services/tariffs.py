@@ -268,7 +268,9 @@ class CDEKDeliveryOptionsService:
         # Загружаем позиции корзины для данного пользователя и магазина
         items = list(
             CartItem.objects
-            .filter(cart=user.cart)
+            .filter(cart=user.cart,
+                    unique_product__product__shop=shop,
+                    )
             .select_related(
                 "unique_product",
                 "unique_product__product",

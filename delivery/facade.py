@@ -391,23 +391,23 @@ class DeliveryFacade:
             owner=user,
         )
 
-        # 7. Создаем OrderProduct.
-        order_products = []
-
-        for item in cart_items:
-            unique_product = locked_products[
-                item.unique_product_id
-            ]
-
-            order_product = OrderProduct.objects.create(
-                order=order,
-                unique_product=unique_product,
-                amount=item.amount,
-                price=unique_product.price,
-                product_name=str(unique_product),
-            )
-
-            order_products.append(order_product)
+        # # 7. Создаем OrderProduct.
+        # order_products = []
+        #
+        # for item in cart_items:
+        #     unique_product = locked_products[
+        #         item.unique_product_id
+        #     ]
+        #
+        #     order_product = OrderProduct.objects.create(
+        #         order=order,
+        #         unique_product=unique_product,
+        #         amount=item.amount,
+        #         price=unique_product.price,
+        #         product_name=str(unique_product),
+        #     )
+        #
+        #     order_products.append(order_product)
 
         # 8. Создаем OrderDelivery
         # и передаем отправление соответствующей ТК.
@@ -416,6 +416,13 @@ class DeliveryFacade:
                 item.unique_product.product.shop
             for item in cart_items
         }
+
+        cart_items_by_shop = {}
+
+        for item in cart_items:
+            shop_id = item.unique_product.product.shop_id
+            cart_items_by_shop.setdefault(shop_id, []).append(item)
+
         for shop_result in delivery_result.shops:
             shop = shops.get(shop_result.shop_id)
             if shop is None:
@@ -432,6 +439,21 @@ class DeliveryFacade:
                 shop=shop,
                 delivery_type=shop.carrier,
             )
+
+            # Создаем OrderProduct конкретно для этого OrderDelivery
+            for item in cart_items_by_shop[shop.id]:
+                unique_product = locked_products[
+                    item.unique_product_id
+                ]
+
+                OrderProduct.objects.create(
+                    order=order,
+                    order_delivery=order_delivery,
+                    unique_product=unique_product,
+                    amount=item.amount,
+                    price=unique_product.price,
+                    product_name=str(unique_product),
+                )
 
             shop_delivery_data = delivery_data.get(
                 shop_result.shop_id
@@ -450,7 +472,7 @@ class DeliveryFacade:
             # 9. Передаем создание специфичных данных конкретной транспортной компании.
             order_service = DeliveryFactory.get_order_service(shop, user)
 
-            order_service._create_cdek_delivery(
+            order_service.create_delivery(
                 order_delivery=order_delivery,
                 shop_result=shop_result,
                 delivery_data=shop_delivery_data

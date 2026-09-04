@@ -534,26 +534,6 @@ class CDEKAdapter(DeliveryAdapter):
             response_data=response,
         )
 
-    def create_delivery(self, data):
-        """Успешное создание заказа в системе СДЭК"""
-        result = self.post_order(data)
-
-        uuid = (
-            result
-            .get("entity", {})
-            .get("uuid")
-        )
-
-        if not uuid:
-            raise CDEKBusinessError(
-                operation="CREATE",
-                message="CDEK uuid отсутствует"
-            )
-
-        status = self.get_order_uuid(uuid)
-
-        return status
-
     def generate_order_item(
             self,
             *,
@@ -910,7 +890,7 @@ class CDEKAdapter(DeliveryAdapter):
 
         return data
 
-    def post_order(
+    def create_delivery(
             self,
             *,
             data: dict,

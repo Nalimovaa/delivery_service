@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from users.models import Role, UserRole
-
+from users.services import normalize_phone
 
 User = get_user_model()
 
@@ -26,6 +26,12 @@ class UserSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             "password": {"write_only": True},  # We do not return the password in the response.
         }
+
+    def validate_phone_number(self, value):
+        try:
+            return normalize_phone(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
 
     def validate(self, attrs):
         # Checking password matches

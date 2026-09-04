@@ -1,8 +1,7 @@
-from rest_framework import serializers
 from seller.models import Shop, CDEKShopDeliverySetting, SellerRequest
 from rest_framework import serializers
 from delivery.serializers import CDEKTariffSerializer
-
+from users.services import normalize_phone
 
 
 class ShopSerializer(serializers.ModelSerializer):
@@ -21,9 +20,17 @@ class ShopSerializer(serializers.ModelSerializer):
             "location_from_country",
             "address",
             "postal_code",
+            "phone",
             "carrier",
         ]
         read_only_fields = ["owner"]
+
+    def validate_phone(self, value):
+        try:
+            return normalize_phone(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
+
 
 
 class ShopDeliverySettingSerializer(serializers.Serializer):

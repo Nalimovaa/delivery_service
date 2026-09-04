@@ -42,6 +42,7 @@ class CdekDeliveryAdmin(admin.ModelAdmin):
         "id",
         "order_delivery",
         "tariff_code",
+        "cdek_uuid",
         "shipment_track_id",
         "order_status",
         "preliminary_price",

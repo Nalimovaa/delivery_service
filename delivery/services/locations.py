@@ -176,12 +176,8 @@ class CDEKCityService:
 
             if len(matches) > 1:
                 raise ValidationError(
-                    {
-                        "location_from": (
-                            "Найдено несколько населенных пунктов "
-                            "CDEK с указанными параметрами."
-                        )
-                    }
+                    "Найдено несколько населенных пунктов "
+                    "CDEK с указанными параметрами."
                 )
 
         queryset = CDEKCity.objects.filter(

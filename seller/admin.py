@@ -14,6 +14,7 @@ class ShopAdmin(admin.ModelAdmin):
         "location_from_district",
         "location_from_country",
         "address",
+        "phone_number",
         "postal_code",
         "carrier",
         "delivery_point",

@@ -38,6 +38,11 @@ class Shop(models.Model):
         verbose_name="Адрес отправления",
     )
 
+    phone_number = models.CharField(
+        max_length=20,
+        verbose_name="Телефон магазина",
+    )
+
     postal_code = models.CharField(
         max_length=20,
         verbose_name="Почтовый индекс отправления",
