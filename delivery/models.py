@@ -1,6 +1,6 @@
 from django.db import models
 
-from delivery.enums import DeliveryType
+from delivery.enums import DeliveryType, StockReservationStatus
 from delivery.managers import CDEKTariffManager, CDEKCityManager, CDEKDeliveryPointManager
 
 
@@ -168,6 +168,11 @@ class CdekDelivery(models.Model):
     shipment_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True) # Стоимость доставки
 
     order_status = models.CharField(max_length=255, blank=True, null=True) # Статус заказа
+
+    stock_status = models.PositiveSmallIntegerField(
+        choices=StockReservationStatus.choices,
+        default=StockReservationStatus.RESERVED,
+    ) # Статус резервирования товара на складе
 
     def __str__(self):
         return (
@@ -625,3 +630,86 @@ class CDEKDeliveryPoint(models.Model):
 
     def __str__(self):
         return f"{self.code} — {self.name}"
+
+
+class CdekDeliveryStatusHistory(models.Model):
+    cdek_delivery = models.ForeignKey(
+        CdekDelivery,
+        on_delete=models.CASCADE,
+        related_name="status_history",
+    )
+
+    status_code = models.CharField(
+        max_length=100,
+    )
+
+    status_name = models.CharField(
+        max_length=255,
+        blank=True,
+    )
+
+    status_date = models.DateTimeField()
+
+    city = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+    )
+
+    is_deleted = models.BooleanField(
+        default=False,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    class Meta:
+        ordering = ["status_date"]
+
+
+class CdekRequestLog(models.Model):
+    cdek_delivery = models.ForeignKey(
+        CdekDelivery,
+        on_delete=models.CASCADE,
+        related_name="request_logs",
+        null=True,
+        blank=True,
+    )
+
+    cdek_uuid = models.UUIDField(
+        null=True,
+        blank=True,
+    )
+
+    request_type = models.CharField(
+        max_length=50,
+    )
+
+    state = models.CharField(
+        max_length=50,
+    )
+
+    date_time = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    error_code = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+    )
+
+    error_message = models.TextField(
+        blank=True,
+        null=True,
+    )
+
+    response_data = models.JSONField(
+        default=dict,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )

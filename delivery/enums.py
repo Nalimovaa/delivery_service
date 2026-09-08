@@ -21,3 +21,11 @@ class CDEKDeliveryMode(models.IntegerChoices):
     POSTAMAT_TO_DOOR = 8, "Постамат-дверь"
     POSTAMAT_TO_WAREHOUSE = 9, "Постамат-склад"
     POSTAMAT_TO_POSTAMAT = 10, "Постамат-постамат"
+
+
+class StockReservationStatus(models.IntegerChoices):
+    """Статусы резервирования товара на складе."""
+
+    RESERVED = 1, "Зарезервирован"
+    CONFIRMED = 2, "Подтверждён"
+    RELEASED = 3, "Возвращён"

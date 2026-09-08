@@ -331,14 +331,7 @@ class DeliveryFacade:
             for item in cart_items
         }
 
-        locked_products = {
-            product.id: product
-            for product in (
-                UniqueProduct.objects
-                .select_for_update()
-                .filter(id__in=unique_product_ids)
-            )
-        }
+        locked_products = StockService.lock_products(unique_product_ids=unique_product_ids,)
 
         # 4. Проверяем остатки.
         for item in cart_items:
@@ -366,7 +359,16 @@ class DeliveryFacade:
                     f"«{unique_product}» на складе."
                 )
 
-        # 5. Повторно рассчитываем доставку.
+        # 5. Резервируем товары
+        for item in cart_items:
+            unique_product = locked_products[item.unique_product_id]
+
+            StockService.reserve(
+                unique_product=unique_product,
+                amount=item.amount,
+            )
+
+        # 6. Повторно рассчитываем доставку.
         delivery_result = self.calculate_delivery(
             user=user,
             selected_tariffs=selected_tariffs,
@@ -386,28 +388,10 @@ class DeliveryFacade:
                     f"{shop_result.error}"
                 )
 
-        # 6. Создаем Order.
+        # 7. Создаем Order.
         order = Order.objects.create(
             owner=user,
         )
-
-        # # 7. Создаем OrderProduct.
-        # order_products = []
-        #
-        # for item in cart_items:
-        #     unique_product = locked_products[
-        #         item.unique_product_id
-        #     ]
-        #
-        #     order_product = OrderProduct.objects.create(
-        #         order=order,
-        #         unique_product=unique_product,
-        #         amount=item.amount,
-        #         price=unique_product.price,
-        #         product_name=str(unique_product),
-        #     )
-        #
-        #     order_products.append(order_product)
 
         # 8. Создаем OrderDelivery
         # и передаем отправление соответствующей ТК.

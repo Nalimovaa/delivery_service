@@ -1,11 +1,17 @@
 from delivery.adapters.cdek import CDEKAdapter
 from delivery.enums import CDEKDeliveryMode
 from delivery.exceptions import CDEKBusinessError
+from delivery.kafka.producers import KafkaProducer
+from delivery.kafka.schemas import CDEKOrderAcceptedEvent
+from delivery.kafka.topics import KafkaTopic
 from delivery.models import OrderDelivery, CdekDelivery
+from delivery.schemas.order import CDEKOrderCreateResponseSchema
 from delivery.schemas.tariffs import ShopCalculateDeliveryResultDTO
 from delivery.services.locations import CDEKLocationValidationService, CDEKDeliveryPointService, CDEKCityService
 from rest_framework.exceptions import ValidationError
 import uuid
+
+from delivery.services.order import CdekRequestLogService, CdekOrderStatusService
 
 
 class CDEKOrderService:
@@ -60,9 +66,15 @@ class CDEKOrderService:
     def __init__(self, user):
         self.user = user
         self.adapter = CDEKAdapter()
+
         self.location_validator = CDEKLocationValidationService()
         self.city_service = CDEKCityService()
         self.delivery_point_service = CDEKDeliveryPointService()
+
+        self.request_log_service = CdekRequestLogService()
+        self.status_service = CdekOrderStatusService()
+
+        self.kafka_producer = KafkaProducer()
 
     def _create_cdek_delivery(
         self,
@@ -415,6 +427,28 @@ class CDEKOrderService:
             to_location=to_location,
         )
 
+    def _check_create_response(
+            self,
+            response: CDEKOrderCreateResponseSchema,
+    ):
+        invalid_requests = [
+            request
+            for request in response.requests
+            if request.state == "INVALID"
+        ]
+
+        if not invalid_requests:
+            return
+
+        request = invalid_requests[0]
+
+        raise CDEKBusinessError(
+            operation="post_order",
+            code=None,
+            message="CDEK не смог зарегистрировать заказ.",
+            response_data=response.model_dump(),
+        )
+
     def create_delivery(
             self,
             *,
@@ -440,10 +474,19 @@ class CDEKOrderService:
             data=data,
         )
 
-        # 4. Получаем UUID заказа CDEK.
-        entity = response.entity
+        # 4. Сохраняем результат запроса CREATE.
+        self.request_log_service.save_create_response(
+            cdek_delivery=cdek_delivery,
+            response=response,
+        )
 
-        cdek_uuid = entity.get("uuid")
+        # 5. Проверяем результат бизнес-операции.
+        self._check_create_response(
+            response=response,
+        )
+
+        # 6. Получаем UUID заказа CDEK.
+        cdek_uuid = response.entity.get("uuid")
 
         if not cdek_uuid:
             raise CDEKBusinessError(
@@ -452,23 +495,39 @@ class CDEKOrderService:
                 response_data=response.model_dump(),
             )
 
-        # 5. Сохраняем UUID.
+        # 7. Сохраняем UUID.
         cdek_delivery.cdek_uuid = cdek_uuid
         cdek_delivery.save(
-            update_fields=["cdek_uuid"]
+            update_fields=["cdek_uuid"],
         )
 
-        # 6. Получаем заказ из CDEK по UUID.
-        order_response = self.adapter.get_order_uuid(
+        # 8. Первый GET заказа по UUID.
+        #    На этом этапе cdek_number может отсутствовать —
+        #    это нормально, заказ ещё может регистрироваться.
+        response = self.adapter.get_order_uuid(
             uuid=cdek_uuid,
         )
 
-        statuses = order_response.entity.statuses
+        # 9. Логируем первый ответ GET.
+        self.request_log_service.save_order_response(
+            cdek_delivery=cdek_delivery,
+            response=response,
+        )
 
-        if statuses:
-            latest_status = statuses[-1]
+        # 10. Сохраняем актуальные статусы заказа.
+        self.status_service.save_statuses(
+            cdek_delivery=cdek_delivery,
+            response=response,
+        )
 
-            cdek_delivery.order_status = latest_status.code
-            cdek_delivery.save(update_fields=["order_status"])
+        # 11. Передаём событие дальше.
+        event = CDEKOrderAcceptedEvent(
+            cdek_delivery_id=cdek_delivery.id,
+            cdek_uuid=cdek_uuid,
+        )
+        KafkaProducer().send(
+            topic=KafkaTopic.CDEK_ORDER_ACCEPTED,
+            message=event.model_dump(),
+        )
 
         return cdek_delivery

@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from datetime import datetime
 
 
 # Pydantic-схема для ответа от CDEKAdapter.get_order_uuid()
@@ -27,7 +28,7 @@ class CDEKOrderStatusSchema(BaseModel):
 
     code: str
     name: str
-    date_time: str
+    date_time: datetime
     city: str | None = None
     deleted: bool = False
 
@@ -107,6 +108,9 @@ class CDEKOrderCreateRequestSchema(BaseModel):
     type: str
     date_time: str
     state: str
+    errors: list[CDEKOrderRequestErrorSchema] = Field(
+        default_factory=list,
+    )
 
 
 class CDEKOrderCreateResponseSchema(BaseModel):

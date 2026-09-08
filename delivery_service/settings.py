@@ -201,6 +201,11 @@ CELERY_RESULT_SERIALIZER = "json"
 
 CELERY_TIMEZONE = "Europe/Moscow"
 
+# Kafka
+
+KAFKA_HOST = os.getenv("KAFKA_HOST", "kafka1")
+KAFKA_PORT = int(os.getenv("KAFKA_PORT", "9092"))
+
 
 # CELERY_BEAT
 

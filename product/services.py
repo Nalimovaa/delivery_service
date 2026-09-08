@@ -77,25 +77,20 @@ class StockService:
         return unique_product.stock >= amount
 
     @staticmethod
-    @transaction.atomic
     def reserve(
-            unique_product_id: int,
+            unique_product: UniqueProduct,
             amount: int,
     ) -> UniqueProduct:
         """
-        Резервирует товар на складе для заказа.
-        """
+    Резервирует товар на складе.
+    UniqueProduct должен быть предварительно заблокирован
+    через select_for_update().
+    """
 
         if amount <= 0:
             raise ValueError(
                 "Количество должно быть больше нуля."
             )
-
-        unique_product = (
-            UniqueProduct.objects
-            .select_for_update()
-            .get(id=unique_product_id)
-        )
 
         if unique_product.stock < amount:
             raise ValueError(
@@ -109,6 +104,19 @@ class StockService:
         )
 
         return unique_product
+
+    @staticmethod
+    def lock_products(
+            unique_product_ids: set[int],
+    ) -> dict[int, UniqueProduct]:
+        return {
+            product.id: product
+            for product in (
+                UniqueProduct.objects
+                .select_for_update()
+                .filter(id__in=unique_product_ids)
+            )
+        }
 
 
 class CartService:
@@ -192,3 +200,15 @@ class CartService:
         """Очищает корзину пользователя, удаляя все товары из нее."""
         cart = CartService.get_or_create_cart(user)
         cart.items.all().delete()
+
+    @staticmethod
+    def clear_items(
+            cart: Cart,
+            unique_product_ids: list[int],
+    ) -> None:
+        """Для созданного заказа на перевозку во внешней системе ТК
+         удаляет из корзины пользователя все товары, которые были включены в заказ."""
+
+        cart.items.filter(
+            unique_product_id__in=unique_product_ids,
+        ).delete()
