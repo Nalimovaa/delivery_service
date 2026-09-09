@@ -6,7 +6,7 @@ from delivery.services.locations import CDEKCityService, CDEKDeliveryPointServic
 from delivery.services.tariffs import CDEKTariffService, CDEKDeliveryOptionsService, CDEKCalculateDeliveryService
 from delivery.tasks.tariffs import sync_cdek_tariffs
 from delivery.tasks.locations import sync_cdek_cities, sync_cdek_delivery_points
-from order.services import CDEKOrderService
+from delivery.services.order import CDEKOrderService
 from seller.models import Shop
 from seller.services import CDEKShopDeliverySettingService
 from django.core.cache import cache

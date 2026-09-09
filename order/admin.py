@@ -14,6 +14,7 @@ class OrderAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "owner",
+        "status",
         "created_at",
     )
 

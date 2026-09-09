@@ -144,6 +144,7 @@ docker-compose exec web python manage.py createsuperuser
 | Generator                             | Ленивая загрузка по одной сроке (например, большой объем логов), использование круглых скобок вместо {} bkb [].                                                                                                                                                                                                                            | потоковая обработка больших списков ПВЗ и тарифов                                                                                                                                                                                                                                              |
 | Factory (Simple Factory)              | Инкапсулирует выбор и запуск логики, связанной с конкретной службой доставки. Клиентский код не содержит множества условных операторов (`if/else`) и обращается к единой точке входа. Фабрика определяет необходимый обработчик в зависимости от выбранного перевозчика.                                                                   | Инициализация и очистка службы доставки после создания, изменения или удаления магазина (`DeliveryFactory`). В зависимости от выбранного перевозчика запускается соответствующая логика (`initialize_cdek`, `cleanup_cdek`).                                                                   |
 | Lazy Initialization + Shared Resource | Архитектурный подход, при котором общий ресурс создается и поддерживается только при наличии потребителей. Позволяет не выполнять лишние операции и не хранить данные, которые в данный момент не используются.                                                                                                                            | Общий справочник тарифов СДЭК. При создании первого магазина с перевозчиком СДЭК запускается синхронизация тарифов. Если магазинов СДЭК нет, Celery-задача завершается без обращения к API. При удалении последнего магазина СДЭК выполняется очистка общего кэша Redis и справочника тарифов. |
+| State pattern                         | отвечает за бизнес-логику переходов                                                                                                                                                                                                                                                                                                        | История состояния заказа в системе СДЕКа                                                                                                                                                                                                                                                       |
 
 
 # Описание конкретной реализации модулей
@@ -478,13 +479,24 @@ POST /api/shops/
 При создании магазина сервер:
 
 1. определяет текущего пользователя;
-    
 2. создает объект `Shop`;
-    
 3. устанавливает текущего пользователя в качестве владельца магазина через поле `owner`;
-    
-4. выполняет инициализацию доставки через `DeliveryFactory.initialize(shop)`.
-    
+4. если выбран перевозчик `CDEK`, проверяет данные магазина через `CDEKShopValidationService`;
+5. выполняет инициализацию доставки через `DeliveryFactory.initialize(shop)`.
+
+Для магазина с `carrier=CDEK` дополнительно проверяются данные отправления:
+
+- населенный пункт;
+- регион;
+- район;
+- страна;
+- почтовый индекс.
+
+Проверка населенного пункта выполняется через `CDEKCityService`. Сначала используется локальный справочник CDEK в Redis/PostgreSQL. Если населенный пункт отсутствует в локальном справочнике, выполняется запрос непосредственно к API CDEK. Это позволяет создать первый магазин CDEK даже до первичной синхронизации общего справочника.
+
+После определения населенного пункта его код используется `CDEKPostalCodeService` для получения допустимых почтовых индексов. Указанный `postal_code` магазина должен соответствовать списку индексов CDEK.
+
+Если данные магазина не соответствуют справочникам CDEK, создание магазина завершается ошибкой валидации, а транзакция откатывается.
 
 Упрощенно процесс выглядит следующим образом:
 
@@ -497,10 +509,26 @@ User + Seller
       │
       ├── owner = текущий пользователь
       │
+      ├── carrier == CDEK?
+      │       │
+      │       ├── Да
+      │       │   │
+      │       │   ├── CDEKCityService
+      │       │   │       ↓
+      │       │   │   проверка города
+      │       │   │
+      │       │   └── CDEKPostalCodeService
+      │       │           ↓
+      │       │       проверка индекса
+      │       │
+      │       └── Нет
+      │
       └── DeliveryFactory.initialize(shop)
 ```
 
-В отличие от предыдущей реализации, создание магазина **не отвечает за назначение роли `Seller`**, поскольку пользователь уже должен получить эту роль через механизм заявки.
+В отличие от предыдущей реализации, создание магазина **не отвечает за назначение роли** `Seller`, поскольку пользователь уже должен получить эту роль через механизм заявки.
+
+Таким образом, `ShopViewSet` отвечает за создание магазина, а специфическая логика доставки делегируется соответствующим сервисам. Для CDEK валидация инкапсулирована в `CDEKShopValidationService`, что позволяет не добавлять CDEK-специфичную логику непосредственно во `ViewSet` и сохранять возможность подключения других служб доставки.
 
 #### 6.6. Управление магазинами
 
@@ -531,7 +559,7 @@ Shop.owner == request.user
 
 #### 6.7. Настройки доставки магазина
 
-Для магазина предусмотрен отдельный объект `ShopDeliverySetting`, который хранит выбранные продавцом тарифы доставки.
+Для магазина предусмотрен отдельный объект `CDEKShopDeliverySetting`, который хранит выбранные продавцом тарифы доставки.
 
 Работа с настройками выполняется через:
 
@@ -564,7 +592,7 @@ Seller
   │
   │ выбирает тарифы
   ▼
-ShopDeliverySettingService
+CDEKShopDeliverySettingService
   │
   ▼
 Redis
@@ -2105,232 +2133,4665 @@ CRUD корзины:
 
 ## Архитектура предварительного расчета доставки (модуль delivery)
 
-Перед оформлением заказа покупатель должен выбрать тариф для каждой группы заказов, сгруппированной по магазину. Для этого он должен видеть список предлагаемых тарифов для каждого магазина, из которого заказываются товары.
+Перед оформлением заказа покупатель должен выбрать тариф доставки **для каждого магазина**, товары которого находятся в корзине.
 
-Для определения транспортной компании товары (UniqueProduct) в корзине покупателя (Cart) группируются по принадлежности к магазину (Shop): UniqueProduct.product.shop.
+Поскольку разные магазины могут иметь:
 
-Если для группы товаров транспортной компанией является СДЭК (Shop.carrier=1), то для 
-расчета с помощью модуля API СДЕКа  "**Расчет по доступным тарифам и дополнительным услугам**" данные берутся из:
-- магазина продавца - город отправления (Shop.location_from):
-		- "from_location".
-- данных покупателя - город назначения (User.location_to):
-		- "to_location"
-- товаров, добавленных в корзину (`Cart` → `CartItem` → `UniqueProduct`) - габариты:
-		- "height";
-		- "length";
-		- "weight";
-		- "width".
-		- 
-Полученный ответ от API СДЕКа валидируем:
-	- все ли магазины имею в настройках тарифы;
-	- все ли магазины попали в предварительный расчет;
-	- все ли товары (`UniqueProduct`) попали в предварительный расчет;
+- разные города отправления;
+- разные регионы отправления;
+- разные службы доставки;
+- разные разрешенные тарифы доставки,
 
-и фильтруем по тарифам, указанным в настройках магазина:
-```python
-# Из настроек достаем тарифы
-tariffs = [setting.tariff for setting in shop.delivery_settings.select_related('tariff')]
+предварительный расчет выполняется **отдельно для каждого магазина**.
+
+Результатом работы фасада является список `ShopDeliveryResultDTO`, содержащий доступные варианты доставки для каждого магазина.
+
+
+### 1. Общая схема
+
+Корзина пользователя имеет следующую структуру:
+
 ```
- 
- и возвращаем JSON со структурой:
- ```json
- [
-  {
-    "shop_id": 1,
-    "shop_name": "Магазин А",
-    "list_unique_product": [unique_product_1, unique_product_2],
-    "options": [
-      {
-        "tariff_code": 121,
-        "tariff_name": "Экономичная посылка",
-        "delivery_sum": 1470.0,
-        "period_min": 0,
-        "period_max": 1,
-        "delivery_date_range": {
-          "min": "2026-07-31",
-          "max": "2026-08-01"
-        },
-        "total_sum": 1764.0
-      },
-      {
-        "tariff_code": 59,
-        "delivery_sum": 2790.0,
-        ...
-      }
-    ]
-  },
-  ...
+Cart
+
+│
+
+├── CartItem
+
+│     └── UniqueProduct
+
+│           └── Product
+
+│                 └── Shop
+
+│
+
+├── CartItem
+
+│     └── UniqueProduct
+
+│           └── Product
+
+│                 └── Shop
+
+│
+
+└── ...
+```
+
+Один магазин может содержать несколько `CartItem`, причем каждый `CartItem` может иметь свое количество товара:
+
+```
+Shop 1
+
+│
+
+├── CartItem
+
+│     └── UniqueProduct: Кроссовки
+
+│         amount = 2
+
+│
+
+├── CartItem
+
+│     └── UniqueProduct: Телефон
+
+│         amount = 1
+
+│
+
+└── CartItem
+
+      └── UniqueProduct: Куртка
+
+          amount = 3
+
+```
+Таким образом, предварительный расчет производится **не для каждого `UniqueProduct` отдельно**, а для всей группы товаров конкретного магазина.
+
+
+### 2. Точка входа — `DeliveryFacade`
+
+`DeliveryFacade` является единой точкой входа для предварительного расчета доставки.
+
+Метод:
+
+DeliveryFacade.pre_calculate_delivery()
+
+отвечает за:
+
+1. получение корзины пользователя;
+2. определение магазинов, товары которых находятся в корзине;
+3. проверка наличия данных пользователя;
+4. получение соответствующего сервиса доставки через `DeliveryFactory`;
+5. запуск предварительного расчета для каждого магазина;
+6. объединение результатов в единый список `ShopDeliveryResultDTO`.
+
+Общая последовательность:
+
+```
+DeliveryFacade
+
+      │
+
+      ├── получает Cart
+
+      │
+
+      ├── получает Shop из Cart
+
+      │
+
+      ├── Shop 1 ──→ DeliveryFactory
+
+      │                  │
+
+      │                  └── CDEKDeliveryOptionsService
+
+      │
+
+      ├── Shop 2 ──→ DeliveryFactory
+
+      │                  │
+
+      │                  └── CDEKDeliveryOptionsService
+
+      │
+
+      └── Shop N ──→ DeliveryFactory
+
+                         │
+
+                         └── CDEKDeliveryOptionsService
+```
+
+Магазины определяются запросом:
+
+```
+shops = (
+
+    Shop.objects
+
+    .filter(
+
+        products__variants__cart_items__cart=cart
+
+    )
+
+    .distinct()
+
+)
+```
+
+`distinct()` необходим, поскольку один магазин может иметь несколько товаров и несколько позиций корзины.
+
+
+### 3. Выбор службы доставки через `DeliveryFactory`
+
+Для каждого магазина фасад вызывает:
+
+```python
+service = DeliveryFactory.get_service(shop)
+```
+
+`DeliveryFactory` определяет службу доставки по:
+
+```python
+shop.carrier
+```
+
+Например:
+
+```python
+_services = {
+
+    DeliveryType.CDEK: CDEKDeliveryOptionsService,
+
+}
+```
+
+Поэтому для магазина, использующего СДЭК:
+
+```
+Shop.carrier = DeliveryType.CDEK
+
+        │
+
+        ▼
+
+DeliveryFactory
+
+        │
+
+        ▼
+
+CDEKDeliveryOptionsService
+
+Такой подход позволяет в дальнейшем добавить другие транспортные компании:
+
+_services = {
+
+    DeliveryType.CDEK: CDEKDeliveryOptionsService,
+
+    DeliveryType.X: XDeliveryOptionsService,
+
+    DeliveryType.Y: YDeliveryOptionsService,
+
+}
+```
+
+При этом `DeliveryFacade` не должен знать внутреннюю реализацию конкретной транспортной компании.
+
+### 4. `CDEKDeliveryOptionsService`
+
+`CDEKDeliveryOptionsService` отвечает за бизнес-логику предварительного расчета доставки для одного магазина.
+
+Основные обязанности:
+
+- получить товары магазина из корзины пользователя;
+- проверить наличие необходимых данных магазина;
+- определить CDEK-код города отправления;
+- определить CDEK-код города назначения;
+- проверить наличие настроенных тарифов магазина;
+- передать товары в `CDEKAdapter`;
+- получить ответ от CDEK;
+- отфильтровать тарифы;
+- сформировать `ShopDeliveryResultDTO`.
+
+### 5. Получение `CartItem`
+
+В отличие от фасада, сервис непосредственно загружает позиции корзины:
+
+```
+items = list(
+
+    CartItem.objects
+
+    .filter(cart=user.cart)
+
+    .select_related(
+
+        "unique_product",
+
+        "unique_product__product",
+
+        "unique_product__product__shop",
+
+    )
+
+    .prefetch_related(
+
+        Prefetch(
+
+            "unique_product__product__shop__delivery_settings",
+
+            queryset=CDEKShopDeliverySetting.objects.select_related("tariff"),
+
+        )
+
+    )
+
+)
+```
+
+На данном этапе загружаются:
+
+```
+CartItem
+
+   │
+
+   └── UniqueProduct
+
+          │
+
+          └── Product
+
+                 │
+
+                 └── Shop
+
+а также настройки доставки магазина:
+
+Shop
+
+ │
+
+ └── CDEKShopDeliverySetting
+
+        │
+
+        └── CDEKTariff
+```
+
+### 6. Определение товаров магазина
+
+Для результата формируется список идентификаторов уникальных товаров:
+
+```python
+unique_product_ids = [
+
+    item.unique_product_id
+
+    for item in items
+
 ]
- ```
+```
 
-Добавляем в фабрику метод для получения адаптера:
+Он используется для связи результата расчета с товарами, для которых был выполнен расчет.
+
+Например:
+
+```
+Shop 1
+
+unique_product_ids = [3, 4, 5]
+```
+
+означает, что результат относится к товарам:
+
+```
+UniqueProduct #3
+
+UniqueProduct #4
+
+UniqueProduct #5
+```
+
+### 7. Получение почтовых индексов населенного пункта
+
+Для формирования адресной доставки CDEK может потребоваться почтовый индекс конкретного адреса.
+
+Почтовые индексы получаются по CDEK location code населенного пункта через API:
+
+GET /v2/location/postalcodes
+
+Метод принимает:
+
+code
+
+— код населенного пункта CDEK.
+
+Например:
+
+Москва
+
+```
+CDEK code = 44
+```
+
+Запрос:
+
+GET /v2/location/postalcodes?code=44
+
+Ответ:
+
+```json
+{
+
+    "code": 44,
+
+    "postal_codes": [
+
+        "101000",
+
+        "101300",
+
+        "101700",
+
+        "101749",
+
+        "101751",
+
+        "101753"
+
+    ]
+
+}
+```
+
+
+#### `CDEKAdapter.get_postalcodes()`
+
+Для обращения к API СДЭК в `CDEKAdapter` реализован метод: def get_postalcodes().
+
+Адаптер отвечает за:
+- формирование параметров запроса;
+- вызов `CDEKClient`;
+- валидацию успешного ответа через Pydantic;
+- преобразование ошибок API в `CDEKBusinessError`.
+
+Для успешного ответа используется: class CDEKPostalCodesResponseSchema.
+
+Таким образом:
+
+```
+CDEKAdapter
+
+    │
+
+    ▼
+
+CDEKClient
+
+    │
+
+    ▼
+
+GET /v2/location/postalcodes
+
+    │
+
+    ▼
+
+JSON
+
+    │
+
+    ▼
+
+CDEKPostalCodesResponseSchema
+```
+
+#### `CDEKPostalCodeService`
+
+Для работы с индексами создан отдельный сервис:
+
+CDEKPostalCodeService
+
+Сервис использует Redis, чтобы не выполнять повторные запросы к CDEK для одного и того же населенного пункта.
+
+Ключ кэша формируется по CDEK location code:
+
+cdek:postal_codes:{city_code}
+
+Например:
+
+```
+cdek:postal_codes:44
+```
+
+Алгоритм работы:
+
+```
+CDEKPostalCodeService
+
+        │
+
+        ▼
+
+      Redis
+
+        │
+
+   ┌────┴─────┐
+
+   │          │
+
+ найдено    отсутствует
+
+   │          │
+
+   ▼          ▼
+
+ return   CDEKAdapter
+
+              │
+
+              ▼
+
+       CDEK API
+
+              │
+
+              ▼
+
+   список postal_codes
+
+              │
+
+              ▼
+
+            Redis
+
+              │
+
+              ▼
+
+            return
+```
+
+Таким образом, `CDEKAdapter` отвечает за взаимодействие с внешним API СДЭК, а `CDEKPostalCodeService` — за бизнес-логику получения и кэширования списка индексов населенного пункта.
+
+### 8. Определение города отправления и назначения
+
+Для расчета доставки через СДЭК необходимы коды населенных пунктов отправления и назначения:
+
+```text
+from_location
+to_location
+```
+
+Город отправления определяется по данным магазина:
+
+```text
+shop.location_from
+shop.location_from_region
+shop.location_from_district
+```
+
+Город назначения определяется по данным пользователя:
+
+```text
+user.location_to
+user.location_to_region
+user.location_to_district
+```
+
+Для определения CDEK-кода используется сервис `CDEKLocationService`.
+
+### CDEKLocationService
+
+`CDEKLocationService` отвечает за получение CDEK-кода населенного пункта по данным города, региона и района.
+
+Сервис используется как в предварительном расчете доступных тарифов, так и при расчете доставки по выбранному тарифу.
+
+Последовательность поиска населенного пункта:
+
+```text
+CDEKLocationService
+        │
+        ▼
+Redis
+        │
+        ├── найден → CDEK code
+        │
+        ▼
+PostgreSQL (CDEKCity)
+        │
+        ├── найден → CDEK code
+        │
+        ▼
+CDEKAdapter.suggest_cities()
+        │
+        ▼
+поиск по названию города
+        │
+        ▼
+фильтрация по региону
+        │
+        ▼
+при необходимости фильтрация по району
+        │
+        ▼
+единственный населенный пункт
+        │
+        ▼
+CDEK code
+```
+
+Таким образом, при наличии населенного пункта в локальных данных обращение к внешнему API СДЭК не требуется.
+
+Если населенный пункт отсутствует в Redis и PostgreSQL, выполняется точечный запрос:
+
 ```python
-class DeliveryFactory:
-	# Реестр адаптеров  
-	_adapters = {  
-	    DeliveryType.CDEK: CDEKAdapter,    # Сюда будете добавлять новые: DeliveryType.POST: RussianPostAdapter,  
-	}
-	@classmethod  
-	def get_adapter(cls, shop: Shop):  
-	    """  
- 	    Возвращает экземпляр нужного адаптера по типу перевозчика.                   DeliveryFactory.get_adapter(DeliveryType.CDEK) -> CDEKAdapter()    
- 	    """    
- 	    adapter_class = cls._adapters.get(shop.carrier)  
-	  
-	    if not adapter_class:  
-	        raise NotImplementedError(f"Адаптер для carrier={shop.carrier} не реализован")  
-	  
-	    return adapter_class()
+CDEKAdapter.suggest_cities(
+    name=city,
+    country_code="RU",
+)
 ```
-Добавляем метод в class DeliveryFacade:
+
+Полученный результат фильтруется по региону:
+
+```text
+region
+```
+
+Если после фильтрации остается несколько населенных пунктов и указан район, дополнительно используется:
+
+```text
+district
+```
+
+Если найден ровно один населенный пункт, его код возвращается в:
+
+```text
+CDEKLocationResultDTO
+```
+
+Например:
+
+```text
+from_location_result.code = 430
+to_location_result.code   = 1042
+```
+
+Если населенный пункт невозможно определить однозначно, сервис возвращает ошибку:
+
+```text
+Не удалось однозначно определить населенный пункт:
+Красный Яр, Самарская область
+```
+
+#### Локальное сохранение населенных пунктов
+
+Если населенный пункт не найден в Redis и PostgreSQL, но успешно найден через `CDEKAdapter.suggest_cities()`, он сохраняется в таблицу `CDEKCity`.
+
+Это позволяет использовать полученные данные при следующих запросах без повторного обращения к API СДЭК.
+
+Схема:
+
+```text
+CDEK API
+   │
+   ▼
+CDEKLocationService
+   │
+   ├── CDEKCity.objects.update_or_create()
+   │
+   └── CDEK code
+```
+
+#### CDEKCity
+
+Для локального хранения справочника населенных пунктов создана модель `CDEKCity`.
+
+Она содержит данные, полученные от API СДЭК:
+
+```text
+code
+city_uuid
+city
+fias_guid
+country_code
+country
+region
+region_code
+sub_region
+longitude
+latitude
+time_zone
+payment_limit
+is_active
+```
+
+Поле:
+
+```text
+code
+```
+
+является уникальным кодом населенного пункта СДЭК и используется при формировании запросов расчета доставки.
+
+Локальный справочник позволяет не выполнять повторные запросы к API для населенных пунктов, которые уже были определены ранее.
+
+### CDEKCityService
+
+Для синхронизации общего справочника населенных пунктов создан отдельный сервис `CDEKCityService`.
+
+В отличие от `CDEKLocationService`, который работает во время пользовательского расчета доставки, `CDEKCityService` отвечает за административную синхронизацию справочника.
+
+Основные обязанности `CDEKCityService`:
+
+- получить список населенных пунктов из API СДЭК;
+    
+- подготовить данные для сохранения;
+    
+- массово создать новые записи;
+    
+- обновить существующие записи;
+    
+- деактивировать населенные пункты, отсутствующие в актуальном ответе API;
+    
+- обновить Redis-кэш.
+    
+
+Основная схема:
+
+```text
+CDEKCityService
+        │
+        ▼
+CDEKAdapter.get_cities()
+        │
+        ▼
+CDEK API
+        │
+        ▼
+list[CDEKCitiesSchema]
+        │
+        ▼
+prepare_cities()
+        │
+        ▼
+CDEKCity.objects.bulk_update_or_create()
+        │
+        ├───────────────┐
+        ▼               ▼
+PostgreSQL       deactivate_missing()
+        │
+        ▼
+update_cache()
+        │
+        ▼
+Redis
+```
+
+#### Получение справочника
+
+`CDEKCityService` вызывает:
+
 ```python
-class DeliveryFacade:  
-    def __init__(self, adapter):  
-        self.adapter = adapter  
-        
-    def pre_calculate_delivery(self, data):  
-        """Предварительный расчет доставки (до оформления Order)"""  
-        pass
+CDEKAdapter.get_cities(
+    country_codes="RU",
+    lang="RU",
+)
 ```
 
-Метод class DeliveryFacade.pre_calculate_delivery() должен:
+Адаптер получает данные через endpoint:
 
-1. Получить корзину пользователя.
-    
-2. Сгруппировать товары по магазинам.
-    
-3. Для каждого магазина получить адаптер через фабрику.
-    
-4. Вызвать метод адаптера `pre_calculate_delivery` (который возвращает сырой ответ от API, возможно уже валидированный Pydantic).
-    
-5. Передать ответ адаптера в сервисный слой (например, `DeliveryOptionsService`), который:
-    
-    - Проверит, что магазин имеет настройки тарифов.
-        
-    - Отфильтрует ответ по разрешённым тарифам из `ShopDeliverySetting`.
-        
-    - Преобразует ответ в нужную структуру.
-        
-6. Собрать результаты по всем магазинам в единый список и вернуть.
-    
-
-Таким образом, фасад не занимается бизнес-логикой обработки ответа, а только координирует вызовы.
-
-
-
-## Архитектура заказа (модуль delivery)
-
-Пользователь нажимает "**Оформить заказ**":
-```
-1. Получить Cart
-       ↓
-2. Получить CartItem
-       ↓
-3. Заблокировать UniqueProduct
-       ↓
-4. Проверить stock
-       ↓
-5. Зарезервировать stock
-       ↓
-6. Создать Order
-       ↓
-7. Создать OrderProduct
-       ↓
-8. Создать OrderDelivery
-       ↓
-9. CDEK registration
-       ↓
-10. изменение статуса OrderDelivery
-       ↓
-11. очистка Cart
+```text
+GET /v2/location/cities
 ```
 
+Ответ API валидируется через Pydantic-схему:
 
-Общий процесс покупки:
+```text
+CDEKCitiesSchema
 ```
+
+После успешной валидации сервис преобразует данные в структуру, необходимую для модели `CDEKCity`.
+
+#### Массовая синхронизация
+
+Для сохранения используется менеджер:
+
+```text
+CDEKCity.objects.bulk_update_or_create()
+```
+
+Новые населенные пункты создаются массово, существующие записи обновляются.
+
+При каждом успешном обновлении:
+
+```text
+is_active = True
+```
+
+Населенные пункты, которые отсутствуют в актуальном ответе API, помечаются:
+
+```text
+is_active = False
+```
+
+Удаление записей из базы при обычной синхронизации не выполняется.
+
+#### Redis-кэш
+
+После обновления PostgreSQL актуальный список активных населенных пунктов сохраняется в Redis:
+
+```text
+cdek:cities
+```
+
+Redis используется как быстрый источник данных при выполнении `CDEKLocationService`.
+
+Таким образом, основной источник постоянного хранения:
+
+```text
+PostgreSQL → CDEKCity
+```
+
+а Redis используется как кэш:
+
+```text
+Redis → cdek:cities
+```
+
+#### Разделение ответственности
+
+`CDEKLocationService` и `CDEKCityService` решают разные задачи:
+
+```text
+CDEKCityService
+    ↓
+административная синхронизация
+общего справочника населенных пунктов
+
+CDEKLocationService
+    ↓
+runtime-поиск конкретного
+населенного пункта при расчете доставки
+```
+
+`CDEKCityService` используется фоновой Celery-задачей:
+
+```text
+Celery Beat
+    ↓
+sync_cdek_cities()
+    ↓
+CDEKCityService.sync_cdek_cities()
+```
+
+`CDEKLocationService` используется непосредственно сервисами расчета доставки:
+
+```text
+CDEKDeliveryOptionsService
+        │
+        ▼
+CDEKLocationService
+        │
+        ▼
+from_location / to_location
+```
+
+и:
+
+```text
+CDEKCalculateDeliveryService
+        │
+        ▼
+CDEKLocationService
+        │
+        ▼
+from_location / to_location
+```
+
+Таким образом, предварительный расчет доступных тарифов и расчет доставки по выбранному тарифу используют единый механизм определения населенных пунктов, а актуальность общего справочника поддерживается отдельной фоновой синхронизацией.
+#### 8. Формирование `packages`
+
+Для предварительного расчета CDEK ожидает список:
+
+```json
+"packages": [
+
+    {
+
+        "weight": 1000
+
+    }
+
+]
+```
+
+В текущей реализации каждый `CartItem` формирует одно место (`package`).
+
+Вес рассчитывается с учетом количества товара:
+
+```json
+package = {
+
+    "weight": product.weight * item.amount,
+
+}
+```
+
+Например:
+
+```
+UniqueProduct:
+
+weight = 800 г
+```
+
+  
+
+```
+CartItem:
+
+amount = 2
+```
+
+получаем:
+
+```json
+{
+
+    "weight": 1600
+
+}
+```
+
+Если в магазине находятся:
+
+```
+Кроссовки — 800 г × 2
+
+Телефон   — 500 г × 1
+
+Куртка    — 1200 г × 3
+```
+то в CDEK передается:
+
+```json
+"packages": [
+
+    {
+
+        "weight": 1600
+
+    },
+
+    {
+
+        "weight": 500
+
+    },
+
+    {
+
+        "weight": 3600
+
+    }
+
+]
+```
+
+#### Габариты
+
+Cейчас в API СДЭКа передается **только вес**.
+
+Это позволяет не выполнять дополнительный алгоритм формирования общей упаковки и определения оптимальных габаритов.
+
+При необходимости бизнес-логика может быть расширена в будущем.
+
+#### 9. Формирование запроса CDEK
+
+`CDEKAdapter` формирует запрос:
+
+```json
+{
+
+    "type": 1,
+
+    "lang": "rus",
+
+    "from_location": {
+
+        "code": 430
+
+    },
+
+    "to_location": {
+
+        "code": 1042
+
+    },
+
+    "packages": [
+
+        {
+
+            "weight": 1600
+
+        },
+
+        {
+
+            "weight": 500
+
+        },
+
+        {
+
+            "weight": 3600
+
+        }
+
+    ],
+
+    "services": []
+
+}
+```
+
+Дополнительные параметры добавляются только при их наличии:
+
+```
+additional_order_types
+
+shipment_point
+
+delivery_point
+
+currency
+
+date
+```
+После формирования запроса адаптер вызывает:
+
+```python
+self.client.post(
+
+    CALCULATOR_TARIFF_LIST,
+
+    json=data,
+
+)
+```
+
+#### 10. `CDEKClient`
+
+`CDEKClient` является непосредственным HTTP-клиентом API СДЭКа.
+
+Цепочка вызовов:
+
+```
+CDEKDeliveryOptionsService
+
+          │
+
+          ▼
+
+    CDEKAdapter
+
+          │
+
+          ▼
+
+     CDEKClient
+
+          │
+
+          ▼
+
+      CDEK API
+```
+`CDEKAdapter` при этом не занимается непосредственно HTTP-соединением.
+
+Его задача — адаптировать внутреннюю модель приложения к формату API СДЭКа.
+
+#### 11. Валидация ответа CDEK
+
+Ответ API преобразуется в Pydantic-модель:
+
+```python
+schema = TariffListResponseSchema.model_validate(response)
+```
+
+Таким образом, дальнейшая бизнес-логика работает уже не с необработанным JSON, а с типизированной моделью:
+
+```
+CDEK API response
+
+       │
+
+       ▼
+
+TariffListResponseSchema
+```
+
+Если API вернул бизнес-ошибку:
+
+```
+if schema.errors:
+```
+
+выбрасывается:
+
+```
+CDEKBusinessError
+```
+
+#### 12. Фильтрация тарифов магазина
+
+CDEK может вернуть больше тарифов, чем разрешено конкретным магазином.
+
+Например, CDEK вернул:
+
+```
+121
+
+122
+
+480
+
+482
+
+139
+
+137
+```
+
+а магазин разрешил:
+
+```
+121
+
+137
+```
+
+Тогда сервис оставляет только:
+
+```
+121
+
+137
+```
+
+Разрешенные тарифы получаются из:
+
+```python
+allowed_codes = {
+
+    setting.tariff.tariff_code
+
+    for setting in shop.delivery_settings.all()
+
+}
+```
+Таким образом:
+
+```
+CDEK API
+
+   │
+
+   ├── 121 ── разрешен ──→ оставить
+
+   ├── 122 ── запрещен ──→ убрать
+
+   ├── 480 ── запрещен ──→ убрать
+
+   ├── 482 ── запрещен ──→ убрать
+
+   ├── 139 ── запрещен ──→ убрать
+
+   └── 137 ── разрешен ──→ оставить
+```
+
+Названия тарифов берутся из локального справочника:
+
+```
+CDEKTariff
+```
+
+#### 13. Результат одного магазина
+
+После фильтрации формируется:
+
+```
+ShopDeliveryResultDTO
+```
+
+Структура:
+
+```
+class ShopDeliveryResultDTO(BaseModel):
+
+    shop_id: int
+
+    shop_name: str
+
+    unique_product_ids: list[int]
+
+    options: list[DeliveryOptionDTO]
+
+    error: str | None = None
+```
+
+Каждый вариант доставки описывается:
+
+```
+class DeliveryOptionDTO(BaseModel):
+
+    tariff_code: int
+
+    tariff_name: str
+
+    delivery_sum: Decimal
+
+    period_min: int
+
+    period_max: int
+
+    delivery_date_range: DeliveryDateRangeDTO | None = None
+
+    services: list[dict] = []
+
+    total_sum: Decimal
+
+    currency: str
+```
+#### 14. Итоговый результат фасада
+
+`DeliveryFacade` выполняет расчет отдельно для каждого магазина и объединяет результаты.
+
+Например:
+
+```
+Cart
+
+│
+
+├── Shop 1
+
+│    ├── UniqueProduct 3
+
+│    ├── UniqueProduct 4
+
+│    └── UniqueProduct 5
+
+│
+
+└── Shop 2
+
+     ├── UniqueProduct 3
+
+     ├── UniqueProduct 4
+
+     └── UniqueProduct 5
+```
+Результат:
+
+```json
+[
+
+    ShopDeliveryResultDTO(
+
+        shop_id=1,
+
+        shop_name="Мой магазин",
+
+        unique_product_ids=[3, 4, 5],
+
+        options=[
+
+            DeliveryOptionDTO(...),
+
+            DeliveryOptionDTO(...),
+
+        ],
+
+    ),
+
+  
+
+    ShopDeliveryResultDTO(
+
+        shop_id=4,
+
+        shop_name="Магазин 2",
+
+        unique_product_ids=[3, 4, 5],
+
+        options=[
+
+            DeliveryOptionDTO(...),
+
+            DeliveryOptionDTO(...),
+
+        ],
+
+    ),
+
+]
+```
+
+При этом один и тот же `UniqueProduct` теоретически может встречаться в разных магазинах только если это действительно разные товарные записи/связи; в нормальной модели конкретный `Product` принадлежит одному `Shop`.
+
+
+#### 15. Итоговая архитектура
+```
+                         Cart
+
+                          │
+
+                          │
+
+                          ▼
+
+                  DeliveryFacade
+
+                          │
+
+             ┌────────────┴────────────┐
+
+             │                         │
+
+          Shop 1                    Shop 2
+
+             │                         │
+
+             ▼                         ▼
+
+      DeliveryFactory          DeliveryFactory
+
+             │                         │
+
+             ▼                         ▼
+
+ CDEKDeliveryOptionsService  CDEKDeliveryOptionsService
+
+             │                         │
+
+             ├── CartItem              ├── CartItem
+
+             ├── location              ├── location
+
+             ├── validation            ├── validation
+
+             ├── packages              ├── packages
+
+             └── filter tariffs        └── filter tariffs
+
+                    │                         │
+
+                    ▼                         ▼
+
+              CDEKAdapter               CDEKAdapter
+
+                    │                         │
+
+                    ▼                         ▼
+
+                CDEKClient                CDEKClient
+
+                    │                         │
+
+                    └──────────┬──────────────┘
+
+                               │
+
+                               ▼
+
+                           CDEK API
+```
+#### Ключевой принцип
+
+```
+DeliveryFacade
+
+    → отвечает за весь запрос корзины и несколько магазинов
+
+  
+
+CDEKDeliveryOptionsService
+
+    → отвечает за расчет доставки одного магазина
+
+  
+
+CDEKAdapter
+
+    → преобразует данные приложения в формат CDEK и обратно
+
+  
+
+CDEKClient
+
+    → выполняет HTTP-взаимодействие с CDEK API
+
+  
+
+DeliveryFactory
+
+    → выбирает реализацию службы доставки
+
+  
+
+CDEKTariff
+
+    → локальный справочник тарифов
+
+  
+
+CDEKShopDeliverySetting
+
+    → определяет, какие тарифы разрешены конкретному магазину
+```
+
+После получения содержимого корзины пользователь должен выбрать способ доставки для каждой группы товаров, принадлежащей отдельному магазину.
+
+Для этого используется endpoint:
+
+POST /api/delivery/pre-calculate/
+
+Endpoint выполняет **предварительный расчет доступных вариантов доставки для всех товаров текущей корзины**.
+
+При этом стоимость доставки **не включается** в итоговую стоимость корзины, возвращаемую endpoint `/api/cart/`. Предварительный расчет только предоставляет пользователю доступные варианты доставки, из которых он должен выбрать тариф для каждого магазина.
+
+### 8. Получение и синхронизация пунктов выдачи CDEK
+
+Для выбора способа доставки пользователю может быть доступен список пунктов выдачи и приема СДЭК.
+
+Пункты выдачи не запрашиваются напрямую из API СДЭК при каждом открытии страницы пользователем. Список ПВЗ является общим справочником и синхронизируется в фоновом режиме через Celery.
+
+Используется endpoint CDEK:
+
+```text
+GET /v2/deliverypoints
+```
+
+Для проекта используется только список пунктов, расположенных на территории России.
+
+#### Архитектура получения ПВЗ
+
+```text
+                  CDEK API
+                     │
+                     │ GET /v2/deliverypoints
+                     ▼
+              CDEKAdapter
+                     │
+                     ▼
+       CDEKDeliveryPointSchema
+          (валидация Pydantic)
+                     │
+                     ▼
+          CDEKDeliveryPointService
+                     │
+              подготовка данных
+                     │
+          ┌──────────┴──────────┐
+          ▼                     ▼
+     PostgreSQL              Redis
+ CDEKDeliveryPoint    cdek:delivery_points
+```
+
+При пользовательском запросе список ПВЗ получается из локальных данных:
+
+```text
+GET /api/delivery/points/
+          │
+          ▼
+CDEKDeliveryPointService
+          │
+          ▼
+        Redis
+          │
+      ┌───┴───┐
+      │       │
+    есть     нет
+      │       │
+      ▼       ▼
+   результат PostgreSQL
+              │
+              ▼
+       восстановление Redis
+              │
+              ▼
+           результат
+```
+
+Таким образом, пользовательский запрос не обращается непосредственно к API СДЭК.
+
+#### 8.1. `CDEKAdapter.get_delivery_points()`
+
+Для работы со справочником ПВЗ в `CDEKAdapter` создан отдельный метод:
+
+```python
+get_delivery_points()
+```
+
+Метод выполняет запрос:
+
+```text
+GET /v2/deliverypoints
+```
+
+с ограничением по стране:
+
+```python
+params = {
+    "country_code": "RU",
+}
+```
+
+Метод получает JSON от CDEK и валидирует каждый объект через Pydantic-схему:
+
+```python
+CDEKDeliveryPointSchema
+```
+
+При успешном ответе возвращается:
+
+```python
+list[CDEKDeliveryPointSchema]
+```
+
+Если API возвращает ошибку, используется:
+
+```python
+CDEKDeliveryPointsErrorResponseSchema
+```
+
+после чего формируется `CDEKBusinessError`.
+
+Схема:
+
+```text
+CDEKClient
+    │
+    ▼
+GET /deliverypoints
+    │
+    ▼
+JSON
+    │
+    ▼
+CDEKDeliveryPointSchema
+    │
+    ▼
+list[CDEKDeliveryPointSchema]
+```
+
+#### 8.2. Pydantic-схемы ПВЗ
+
+Для типизации ответа CDEK созданы следующие схемы:
+
+```text
+CDEKDeliveryPointPhoneSchema
+CDEKDeliveryPointImageSchema
+CDEKDeliveryPointWorkTimeSchema
+CDEKDeliveryPointLocationSchema
+CDEKDeliveryPointSchema
+CDEKDeliveryPointsErrorSchema
+CDEKDeliveryPointsErrorResponseSchema
+```
+
+Основная схема содержит информацию:
+
+- код и UUID ПВЗ;
+    
+- название;
+    
+- тип пункта;
+    
+- владельца;
+    
+- режим работы;
+    
+- контактную информацию;
+    
+- поддерживаемые операции;
+    
+- фотографии;
+    
+- расписание;
+    
+- статус;
+    
+- информацию о городе и регионе;
+    
+- адрес;
+    
+- координаты;
+    
+- UUID населенного пункта.
+    
+
+Вложенная структура `location` преобразуется при сохранении в отдельные поля модели `CDEKDeliveryPoint`.
+
+#### 8.3. Модель `CDEKDeliveryPoint`
+
+Для постоянного хранения создана модель:
+
+```python
+CDEKDeliveryPoint
+```
+
+Она содержит данные ПВЗ, полученные из API CDEK.
+
+Основные группы данных:
+
+```text
+Идентификация
+    code
+    uuid
+    name
+
+Параметры ПВЗ
+    type
+    owner_code
+    status
+
+Возможности
+    is_handout
+    is_reception
+    allowed_cod
+    have_cash
+    have_cashless
+    ...
+
+Адрес
+    country_code
+    region_code
+    region
+    city_code
+    city
+    postal_code
+    address
+    address_full
+
+Координаты
+    longitude
+    latitude
+
+Связь с городом
+    city_uuid
+
+Дополнительные данные
+    work_time
+    phones
+    office_image_list
+    work_time_list
+    work_time_exception_list
+
+Служебные поля
+    is_active
+    created_at
+    updated_at
+```
+
+Справочник использует поле:
+
+```text
+code
+```
+
+как уникальный идентификатор ПВЗ CDEK.
+
+#### 8.4. `CDEKDeliveryPointManager`
+
+Для массового обновления справочника создан:
+
+```python
+CDEKDeliveryPointManager
+```
+
+Менеджер предоставляет метод:
+
+```python
+bulk_update_or_create()
+```
+
+Он работает по аналогии с `CDEKCityManager`.
+
+Алгоритм:
+
+```text
+Полученный список ПВЗ
+        │
+        ▼
+Получение существующих записей
+        │
+        ▼
+Сравнение по code
+        │
+   ┌────┴────┐
+   ▼         ▼
+существует  отсутствует
+   │         │
+   ▼         ▼
+bulk_update bulk_create
+```
+
+Операция выполняется внутри:
+
+```python
+transaction.atomic()
+```
+
+Для существующих ПВЗ обновляются актуальные данные из API.
+
+При каждом обновлении:
+
+```python
+is_active = True
+```
+
+#### 8.5. `CDEKDeliveryPointService`
+
+Для бизнес-логики синхронизации создан сервис:
+
+```python
+CDEKDeliveryPointService
+```
+
+Он отвечает за:
+
+- получение списка ПВЗ через адаптер;
+    
+- подготовку данных;
+    
+- массовое сохранение в PostgreSQL;
+    
+- деактивацию отсутствующих ПВЗ;
+    
+- обновление Redis-кэша;
+    
+- получение ПВЗ из локального хранилища.
+    
+
+Основной процесс синхронизации:
+
+```text
+sync_cdek_delivery_points()
+        │
+        ▼
+fetch_delivery_points()
+        │
+        ▼
+CDEKAdapter.get_delivery_points()
+        │
+        ▼
+list[CDEKDeliveryPointSchema]
+        │
+        ▼
+prepare_delivery_points()
+        │
+        ▼
+CDEKDeliveryPoint.objects.bulk_update_or_create()
+        │
+        ├───────────────┐
+        ▼               ▼
+ PostgreSQL      deactivate_missing()
+                        │
+                        ▼
+                 update_cache()
+                        │
+                        ▼
+                      Redis
+```
+
+### `fetch_delivery_points()`
+
+Получает список ПВЗ из API:
+
+```python
+adapter.get_delivery_points()
+```
+
+### `prepare_delivery_points()`
+
+Преобразует Pydantic-объекты в словари, соответствующие модели `CDEKDeliveryPoint`.
+
+В частности, вложенный объект:
+
+```python
+point.location
+```
+
+раскладывается на отдельные поля:
+
+```text
+country_code
+region_code
+region
+city_code
+city
+postal_code
+longitude
+latitude
+address
+address_full
+city_uuid
+```
+
+### `save_delivery_points()`
+
+Выполняет массовое создание и обновление:
+
+```python
+CDEKDeliveryPoint.objects.bulk_update_or_create(
+    delivery_points
+)
+```
+
+### `deactivate_missing()`
+
+После получения актуального списка кодов ПВЗ выполняется проверка:
+
+```python
+CDEKDeliveryPoint.objects.exclude(
+    code__in=active_codes,
+).update(
+    is_active=False,
+)
+```
+
+ПВЗ, которые отсутствуют в актуальном ответе CDEK, не удаляются из PostgreSQL, а помечаются:
+
+```text
+is_active = False
+```
+
+Это позволяет сохранить исторические данные и избежать физического удаления записей.
+
+### `update_cache()`
+
+После успешной синхронизации активные ПВЗ выгружаются в Redis:
+
+```text
+cdek:delivery_points
+```
+
+Redis хранит сокращенный набор информации, необходимый для быстрого получения списка ПВЗ:
+
+```text
+code
+name
+uuid
+type
+owner_code
+status
+is_handout
+is_reception
+allowed_cod
+country_code
+region_code
+region
+city_code
+city
+postal_code
+longitude
+latitude
+address
+address_full
+city_uuid
+```
+
+#### 8.6. Получение ПВЗ из кэша и БД
+
+Для пользовательского доступа создан метод:
+
+```python
+get_delivery_points()
+```
+
+Он не обращается к CDEK API.
+
+Сначала выполняется поиск в Redis:
+
+```text
+Redis
+  │
+  ├── данные есть → вернуть данные
+  │
+  └── данных нет
+          │
+          ▼
+      PostgreSQL
+          │
+          ▼
+      восстановить Redis
+          │
+          ▼
+        вернуть
+```
+
+При этом:
+
+```python
+get_cached_delivery_points()
+```
+
+предназначен для получения данных непосредственно из Redis.
+
+Разделение методов позволяет отдельно использовать:
+
+```text
+get_cached_delivery_points()
+```
+
+когда нужен только кэш, и:
+
+```text
+get_delivery_points()
+```
+
+когда нужен полноценный локальный источник с fallback на PostgreSQL.
+
+#### 8.7. Celery-задача
+
+Для фоновой синхронизации создана задача:
+
+```python
+sync_cdek_delivery_points
+```
+
+Файл:
+
+```text
+delivery/tasks/locations.py
+```
+
+Задача выполняет проверку наличия магазинов с перевозчиком CDEK:
+
+```python
+Shop.objects.filter(
+    carrier=DeliveryType.CDEK
+).exists()
+```
+
+Если магазинов CDEK нет, синхронизация не выполняется:
+
+```json
+{
+    "processed": 0,
+    "status": "skipped"
+}
+```
+
+Если хотя бы один магазин CDEK существует, запускается:
+
+```python
+CDEKDeliveryPointService().sync_cdek_delivery_points()
+```
+
+Задача настроена с автоматическими повторными попытками:
+
+```python
+@shared_task(
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 3},
+)
+```
+
+#### 8.8. Периодическая синхронизация
+
+Синхронизация ПВЗ выполняется через Celery Beat.
+
+Расписание:
+
+```python
+CELERY_BEAT_SCHEDULE = {
+    "sync-cdek-tariffs": {
+        "task": "delivery.tasks.tariffs.sync_cdek_tariffs",
+        "schedule": crontab(hour=3, minute=0),
+    },
+    "sync-cdek-cities": {
+        "task": "delivery.tasks.locations.sync_cdek_cities",
+        "schedule": crontab(hour=3, minute=30),
+    },
+    "sync-cdek-delivery-points": {
+        "task": "delivery.tasks.locations.sync_cdek_delivery_points",
+        "schedule": crontab(hour=4, minute=0),
+    },
+}
+```
+
+Таким образом:
+
+```text
+03:00 → синхронизация тарифов
+03:30 → синхронизация населенных пунктов
+04:00 → синхронизация ПВЗ
+```
+
+
+#### 8.9. Lazy Initialization и Shared Resource
+
+Справочник ПВЗ является общим ресурсом для всех магазинов маркетплейса, использующих CDEK.
+
+При создании первого магазина CDEK через:
+
+```text
+DeliveryFactory.initialize(shop)
+        │
+        ▼
+initialize_cdek(shop)
+```
+
+запускается:
+
+```python
+sync_cdek_delivery_points.delay()
+```
+
+При наличии других магазинов CDEK повторная инициализация общего справочника не требуется.
+
+При удалении последнего магазина CDEK выполняется очистка:
+
+```text
+Redis
+    └── cdek:delivery_points
+
+PostgreSQL
+    └── CDEKDeliveryPoint
+```
+
+Если магазины CDEK продолжают существовать, общий справочник не удаляется.
+
+Таким образом используется принцип:
+
+```text
+Shared Resource
++
+Lazy Initialization
+```
+
+Общий справочник существует только при наличии магазинов, использующих CDEK.
+
+#### 8.10. API получения списка ПВЗ
+
+Для клиентского приложения создан endpoint:
+
+```text
+GET /api/delivery/points/
+```
+
+Представление:
+
+```python
+DeliveryPointsViewSet
+```
+
+ViewSet обращается к:
+
+```python
+CDEKDeliveryPointService.get_delivery_points()
+```
+
+и не выполняет прямых обращений к CDEK API.
+
+Схема:
+
+```text
+GET /api/delivery/points/
+          │
+          ▼
+DeliveryPointsViewSet
+          │
+          ▼
+CDEKDeliveryPointService
+          │
+          ▼
+        Redis
+          │
+       нет данных
+          ▼
+      PostgreSQL
+          │
+          ▼
+       Response
+```
+
+Для документации Swagger используется:
+
+```python
+CDEKDeliveryPointSerializer
+```
+
+Сериализатор описывает данные, возвращаемые клиенту для выбора пункта выдачи.
+
+#### 8.11. Общая архитектура справочников CDEK
+
+После добавления ПВЗ архитектура справочных данных CDEK имеет единый подход:
+
+```text
+                     CDEK API
+                        │
+        ┌───────────────┼────────────────┐
+        │               │                │
+        ▼               ▼                ▼
+     Tariffs          Cities        Delivery Points
+        │               │                │
+        ▼               ▼                ▼
+CDEKTariffService CDEKCityService CDEKDeliveryPointService
+        │               │                │
+        ▼               ▼                ▼
+ PostgreSQL        PostgreSQL       PostgreSQL
+        │               │                │
+        ▼               ▼                ▼
+   Redis Cache      Redis Cache      Redis Cache
+```
+
+Каждый справочник имеет собственный:
+
+```text
+Adapter
+Pydantic Schema
+Model
+Manager
+Service
+Celery Task
+Redis Cache
+```
+
+При этом логика всех трех справочников построена одинаково:
+
+```text
+CDEK API
+    ↓
+CDEKAdapter
+    ↓
+Pydantic validation
+    ↓
+Service
+    ↓
+Manager
+    ↓
+PostgreSQL
+    ↓
+Redis
+```
+
+Такой подход позволяет не выполнять запросы к CDEK API при каждом пользовательском запросе и централизованно поддерживать локальные справочники актуальными.
+
+## Архитектура предварительного расчета заказа (модуль Delivery) (Архитектура расчета стоимости доставки по выбранному тарифу)
+
+Данный подмодуль выполняет повторный расчет стоимости корзины после того, как пользователь выбрал способ доставки для каждой группы товаров, сформированной по магазинам.
+
+Предварительно пользователь получает список доступных тарифов для каждого магазина через:
+
+```text
+POST /api/delivery/pre-calculate/
+```
+
+После выбора тарифа frontend передает на сервер только соответствие:
+
+```json
+{
+    "selected_tariffs": {
+        "1": 137,
+        "4": 121
+    }
+}
+```
+
+где ключ — `shop_id`, а значение — `tariff_code`.
+
+Для каждого магазина сервер самостоятельно получает товары из актуальной корзины, повторно проверяет выбранный тариф, выполняет расчет доставки через соответствующий сервис транспортной компании и рассчитывает итоговую стоимость группы товаров.
+
+### Общая схема
+
+```text
+1. POST /api/delivery/pre-calculate/
+                │
+                ▼
+       Доступные тарифы
+       для каждого магазина
+                │
+                ▼
+       Пользователь выбирает
+       тариф для каждого магазина
+                │
+                ▼
+2. POST /api/delivery/calculate/
+                │
+                │
+                ├── selected_tariffs
+                │      {
+                │          1 → 137,
+                │          4 → 121
+                │      }
+                │
+                ▼
+       DeliveryCalculationViewSet
+                │
+                ▼
+       DeliveryFacade
+                │
+                ├── получает корзину
+                ├── получает магазины корзины
+                │
+                ▼
+       Для каждого магазина
+                │
+                ▼
+       DeliveryFactory
+                │
+                ▼
+       сервис конкретной ТК
+                │
+                ├── получает товары магазина
+                ├── получает актуальную стоимость товаров
+                ├── проверяет город отправления
+                ├── проверяет город получения
+                ├── получает CDEK location code
+                ├── проверяет настройки доставки
+                ├── проверяет выбранный тариф
+                │
+                ▼
+       CDEKAdapter.calculate_delivery()
+                │
+                ▼
+       TariffCalculationResponseSchema
+                │
+                ▼
+       CalculateDeliveryResultDTO
+                │
+                ▼
+       DeliveryFacade
+                │
+                ├── стоимость товаров магазина
+                ├── стоимость доставки магазина
+                ├── итог магазина
+                │
+                ▼
+       CartDeliveryResultDTO
+                │
+                ├── результаты всех магазинов
+                ├── стоимость всех товаров
+                ├── стоимость всех доставок
+                └── итоговая стоимость корзины
+```
+
+### 1. `CDEKCalculateDeliveryService`
+
+`CDEKCalculateDeliveryService` отвечает за расчет стоимости доставки **одной группы товаров одного магазина по конкретному выбранному тарифу**.
+
+Сервис получает:
+
+```python
+shop
+user
+tariff_code
+```
+
+и возвращает `CalculateDeliveryResultDTO`.
+
+Основные обязанности сервиса:
+- получить `CartItem` текущего пользователя только для переданного магазина;
+- получить список `unique_product_ids`;
+- получить актуальную стоимость товаров магазина;
+- определить транспортную компанию магазина;
+- проверить наличие города и региона отправления;
+- определить город и регион получения пользователя;
+- получить CDEK location code для города отправления;
+- получить CDEK location code для города получения;
+- проверить наличие настроек доставки магазина;
+- проверить, что выбранный пользователем тариф разрешен магазином;
+- вызвать `CDEKAdapter.calculate_delivery()`;
+- получить стоимость доставки из ответа транспортной компании;
+- вернуть унифицированный `CalculateDeliveryResultDTO`.
+
+#### Получение товаров магазина
+
+Товары не передаются frontend в запросе. Сервис самостоятельно получает актуальные позиции корзины:
+
+```python
+items = list(
+    CartItem.objects
+    .filter(
+        cart=user.cart,
+        unique_product__product__shop=shop,
+    )
+    ...
+)
+```
+
+Таким образом, frontend не может передать произвольный набор товаров для расчета. Источником данных всегда является текущая корзина пользователя.
+
+#### Расчет стоимости товаров магазина
+
+Стоимость товаров рассчитывается непосредственно по актуальным `CartItem`:
+
+```python
+products_sum = sum(
+    item.unique_product.price * item.amount
+    for item in items
+)
+```
+
+Таким образом:
+
+```text
+products_sum =
+сумма актуальных товаров группы магазина
+```
+
+Стоимость товаров не передается клиентом и не берется из предыдущего предварительного расчета.
+
+#### Определение транспортной компании
+
+Название транспортной компании определяется непосредственно из настроек магазина:
+
+```python
+carrier_name = shop.get_carrier_display()
+```
+
+В результате сервис возвращает, например:
+
+```json
+{
+    "carrier_name": "СДЭК"
+}
+```
+
+Это позволяет frontend понимать, какой транспортной компанией будет выполняться доставка товаров магазина.
+
+#### Проверка города отправления
+
+Перед расчетом проверяется наличие у магазина:
+
+```text
+location_from
+location_from_region
+```
+
+При отсутствии данных расчет прекращается и возвращается ошибка.
+
+#### Определение CDEK location code
+
+Сервис не работает непосредственно с текстовыми названиями городов при обращении к API СДЭКа.
+
+Сначала вызывается:
+
+```python
+self.location_service.get_location_code(...)
+```
+
+для города отправления магазина и города получения пользователя.
+
+В результате сервис получает CDEK location code, который передается адаптеру.
+
+#### Проверка выбранного тарифа
+
+Сервис получает настройки доставки магазина:
+
+```python
+delivery_settings = list(
+    shop.delivery_settings.select_related("tariff")
+)
+```
+
+После этого выполняется поиск тарифа с переданным пользователем `tariff_code`:
+
+```python
+selected_setting = next(
+    (
+        setting
+        for setting in delivery_settings
+        if setting.tariff.tariff_code == tariff_code
+    ),
+    None,
+)
+```
+
+Если тариф отсутствует в настройках магазина, расчет не выполняется.
+
+Таким образом, даже если frontend передаст тариф, которого не было в предварительном списке, сервер повторно проверит его допустимость.
+
+#### Вызов адаптера
+
+После прохождения всех проверок вызывается:
+
+```python
+response = self.adapter.calculate_delivery(
+    from_location_code=from_location_result.code,
+    to_location_code=to_location_result.code,
+    tariff_code=tariff_code,
+    items=items,
+    **data,
+)
+```
+
+Адаптер отвечает только за взаимодействие с API СДЭКа.
+
+Он:
+
+- формирует запрос;
+    
+- преобразует `CartItem` в `packages`;
+    
+- выполняет HTTP-запрос;
+    
+- валидирует ответ через `TariffCalculationResponseSchema`;
+    
+- обрабатывает бизнес-ошибки СДЭКа.
+    
+
+Сервис не знает деталей HTTP-запроса.
+
+#### Формирование результата сервиса
+
+После ответа адаптера сервис преобразует результат в общий DTO:
+
+```python
+return CalculateDeliveryResultDTO(
+    shop_id=shop.id,
+    shop_name=shop.name,
+    carrier_name=carrier_name,
+    unique_product_ids=unique_product_ids,
+    tariff_code=tariff_code,
+    tariff_name=selected_setting.tariff.tariff_name,
+    products_sum=products_sum,
+    delivery_sum=response.total_sum,
+    calculation=response,
+)
+```
+
+`delivery_sum` извлекается внутри специализированного сервиса CDEK:
+
+```python
+delivery_sum=response.total_sum
+```
+
+Поэтому вышестоящие компоненты не зависят от структуры `TariffCalculationResponseSchema`.
+
+Для другой транспортной компании ее специализированный сервис сможет извлечь стоимость из собственного ответа и вернуть то же унифицированное поле:
+
+```python
+CalculateDeliveryResultDTO.delivery_sum
+```
+
+### 2. `CalculateDeliveryResultDTO`
+
+`CalculateDeliveryResultDTO` является унифицированным результатом расчета для одного магазина:
+
+```python
+class CalculateDeliveryResultDTO(BaseModel):
+    shop_id: int
+    shop_name: str
+    carrier_name: str
+    unique_product_ids: list[int]
+
+    tariff_code: int | None = None
+    tariff_name: str | None = None
+
+    products_sum: Decimal | None = None
+    delivery_sum: Decimal | None = None
+
+    calculation: TariffCalculationResponseSchema | None = None
+
+    error: str | None = None
+```
+
+DTO содержит:
+- магазин;
+- транспортную компанию;
+- товары магазина;
+- выбранный тариф;
+- стоимость товаров;
+- стоимость доставки;
+- полный ответ конкретной транспортной компании;
+- ошибку, если расчет не выполнен.
+
+Поле `calculation` сохраняет полный специфичный ответ СДЭКа, а `products_sum` и `delivery_sum` являются унифицированными полями для работы вышестоящего слоя.
+
+### 3. `DeliveryFactory`
+
+Фасад не создает `CDEKCalculateDeliveryService` напрямую.
+
+Для выбора сервиса используется фабрика:
+
+```python
+_code_tariff_services = {
+    DeliveryType.CDEK: CDEKCalculateDeliveryService,
+}
+```
+
+Фабрика предоставляет:
+
+```python
+DeliveryFactory.get_code_tariff_service(shop)
+```
+
+Метод определяет транспортную компанию магазина:
+
+```python
+service_class = cls._code_tariff_services.get(shop.carrier)
+```
+
+и возвращает соответствующий сервис.
+
+Таким образом:
+
+```text
+Shop.carrier
+      │
+      ▼
+DeliveryFactory
+      │
+      ├── CDEK → CDEKCalculateDeliveryService
+      ├── ТК 2 → Service другого перевозчика
+      └── ТК 3 → Service другого перевозчика
+```
+
+`DeliveryFacade` остается независимым от конкретной транспортной компании.
+
+### 4. `DeliveryFacade.calculate_delivery()`
+
+`DeliveryFacade.calculate_delivery()` является единой точкой входа для расчета стоимости всей корзины.
+
+Метод принимает:
+
+```python
+calculate_delivery(
+    user,
+    selected_tariffs: dict[int, int],
+    **kwargs,
+)
+```
+
+Например:
+
+```python
+selected_tariffs = {
+    1: 137,
+    4: 121,
+}
+```
+
+где:
+
+```text
+1 → магазин с ID 1 → тариф 137
+4 → магазин с ID 4 → тариф 121
+```
+
+#### Получение магазинов
+
+Фасад самостоятельно получает магазины, товары которых находятся в корзине пользователя.
+
+Поэтому frontend не определяет, какие магазины должны участвовать в расчете.
+
+#### Расчет каждого магазина
+
+Для каждого магазина фасад получает выбранный тариф:
+
+```python
+tariff_code = selected_tariffs.get(shop.id)
+```
+
+Если тариф не передан, магазин получает ошибку:
+
+```text
+Для магазина не выбран тариф доставки
+```
+
+Если тариф передан, фасад получает сервис через фабрику:
+
+```python
+service = DeliveryFactory.get_code_tariff_service(shop)
+```
+
+и вызывает:
+
+```python
+result = service.process(
+    shop=shop,
+    user=user,
+    tariff_code=tariff_code,
+    **kwargs,
+)
+```
+
+Таким образом, фасад не знает:
+- как работает CDEK;
+- какой endpoint вызывается;
+- как формируется запрос;
+- где в ответе находится стоимость доставки;
+- какая Pydantic-схема используется конкретной транспортной компанией.
+
+Все эти обязанности находятся внутри соответствующего сервиса и адаптера.
+
+### 5. Расчет стоимости группы товаров
+
+После получения `CalculateDeliveryResultDTO` фасад получает уже унифицированные:
+
+```python
+result.products_sum
+result.delivery_sum
+```
+
+и рассчитывает стоимость группы:
+
+```python
+total_sum = (
+    result.products_sum + result.delivery_sum
+    if result.products_sum is not None
+    and result.delivery_sum is not None
+    else None
+)
+```
+
+Таким образом:
+
+```text
+Стоимость группы магазина =
+стоимость товаров магазина + стоимость доставки
+```
+
+Например:
+
+```text
+Магазин 1
+
+Товары:     16 300 ₽
+Доставка:      360 ₽
+───────────────────
+Итого:      16 660 ₽
+```
+
+### 6. Расчет итоговой стоимости всей корзины
+
+Фасад одновременно суммирует результаты всех магазинов:
+
+```python
+total_products_sum += result.products_sum
+total_delivery_sum += result.delivery_sum
+```
+
+В итоге формируется:
+
+```python
+CartDeliveryResultDTO(
+    shops=results,
+    products_sum=total_products_sum,
+    delivery_sum=total_delivery_sum,
+    total_sum=total_products_sum + total_delivery_sum,
+)
+```
+
+То есть:
+
+```text
+Итоговая стоимость товаров =
+сумма товаров всех магазинов
+
+Итоговая стоимость доставки =
+сумма доставок всех магазинов
+
+Итоговая стоимость корзины =
+товары всех магазинов + доставка всех магазинов
+```
+
+Например:
+
+```text
+Магазин 1
+товары:       16 300 ₽
+доставка:        360 ₽
+итого:         16 660 ₽
+
+Магазин 2
+товары:        2 336 ₽
+доставка:        324 ₽
+итого:          2 660 ₽
+
+──────────────────────────
+Товары:       18 636 ₽
+Доставка:        684 ₽
+Итого:        19 320 ₽
+```
+
+### 7. `CartDeliveryResultDTO`
+
+Итоговый DTO содержит результаты по каждому магазину и общую стоимость корзины:
+
+```python
+class CartDeliveryResultDTO(BaseModel):
+    shops: list[ShopCalculateDeliveryResultDTO]
+
+    products_sum: Decimal | None = None
+    delivery_sum: Decimal | None = None
+    total_sum: Decimal | None = None
+
+    error: str | None = None
+```
+
+Таким образом, сервер возвращает одновременно:
+
+```text
+shops
+ ├── магазин 1
+ │    ├── товары
+ │    ├── доставка
+ │    ├── выбранный тариф
+ │    └── итог магазина
+ │
+ └── магазин 2
+      ├── товары
+      ├── доставка
+      ├── выбранный тариф
+      └── итог магазина
+
+products_sum  → товары всей корзины
+delivery_sum  → доставка всей корзины
+total_sum     → итог всей корзины
+```
+
+### 8. API endpoint
+
+Для вызова расчета используется:
+
+```text
+POST /api/delivery/calculate/
+```
+
+Frontend передает только выбранные тарифы:
+
+```json
+{
+    "selected_tariffs": {
+        "1": 137,
+        "4": 121
+    }
+}
+```
+
+Ключи объекта в JSON являются строками, после валидации `CalculateDeliveryRequestSerializer` преобразуются в `int`:
+
+```python
+{
+    1: 137,
+    4: 121
+}
+```
+
+После этого запрос передается в:
+
+```python
+DeliveryFacade.calculate_delivery()
+```
+
+Сервер самостоятельно определяет:
+- наличие корзины;
+- наличие магазинов в корзине;
+- товары каждого магазина;
+- актуальную стоимость товаров;
+- допустимость выбранного тарифа;
+- транспортную компанию магазина;
+- стоимость доставки;
+- итоговую стоимость каждого магазина;
+- итоговую стоимость всей корзины.
+### 9. Итоговая ответственность компонентов
+
+```text
+DeliveryCalculationViewSet
+    │
+    │ принимает selected_tariffs
+    ▼
+DeliveryFacade
+    │
+    │ группирует корзину по магазинам
+    │ агрегирует результаты
+    ▼
+DeliveryFactory
+    │
+    │ выбирает сервис по carrier магазина
+    ▼
+CDEKCalculateDeliveryService
+    │
+    │ бизнес-логика расчета для одного магазина
+    │ проверка тарифа
+    │ расчет товаров
+    ▼
+CDEKAdapter
+    │
+    │ формирование HTTP-запроса
+    │ вызов API СДЭКа
+    │ валидация ответа
+    ▼
+TariffCalculationResponseSchema
+    │
+    ▼
+CalculateDeliveryResultDTO
+    │
+    ▼
+DeliveryFacade
+    │
+    ▼
+CartDeliveryResultDTO
+```
+
+Такой подход позволяет повторно проверять стоимость и выбранный тариф непосредственно на сервере перед оформлением заказа и при этом не связывать `DeliveryFacade` с конкретной структурой ответа СДЭКа.
+
+
+
+## Архитектура заказа и регистрации отправления CDEK
+
+### 1. Общая архитектура заказа
+
+Заказ пользователя является агрегатной сущностью, которая объединяет товары и отдельные отправления по магазинам.
+
+Основные сущности:
+
+```text
+Order
+ │
+ ├── OrderProduct
+ │
+ └── OrderDelivery
+       │
+       └── CdekDelivery
+```
+
+`Order` представляет общий заказ пользователя.
+
+`OrderProduct` представляет конкретную строку заказа: вариант товара, количество, цену и название товара на момент оформления.
+
+`OrderDelivery` представляет отдельное отправление заказа. Отправление создаётся для каждого магазина отдельно.
+
+`CdekDelivery` содержит данные, специфичные для транспортной компании CDEK.
+
+Таким образом:
+
+```text
+Order
+  │
+  ├── OrderDelivery (магазин 1)
+  │      ├── OrderProduct
+  │      ├── OrderProduct
+  │      └── CdekDelivery
+  │
+  └── OrderDelivery (магазин 2)
+         ├── OrderProduct
+         └── CdekDelivery
+```
+
+Это позволяет одному пользовательскому заказу содержать несколько отправлений, например если товары были приобретены у разных продавцов.
+
+### 2. Жизненный цикл заказа
+
+Пользователь нажимает кнопку **«Оформить заказ»**.
+
+Запрос поступает в:
+
+```text
+POST /api/orders/
+        │
+        ▼
+OrderViewSet.create()
+        │
+        ▼
+DeliveryFacade.create_order()
+```
+
+На этом этапе выполняется вся синхронная часть создания заказа.
+
+Общий процесс:
+
+```text
+Пользователь
+     │
+     ▼
+POST /api/orders/
+     │
+     ▼
+OrderViewSet.create()
+     │
+     ▼
+Проверка входных данных
+     │
+     ▼
+DeliveryFacade.create_order()
+     │
+     ├── получение Cart
+     │
+     ├── получение CartItem
+     │
+     ├── блокировка UniqueProduct
+     │
+     ├── проверка stock
+     │
+     ├── резервирование товара
+     │
+     ├── расчёт доставки
+     │
+     ├── создание Order
+     │
+     ├── создание OrderDelivery
+     │
+     ├── создание OrderProduct
+     │
+     └── создание CdekDelivery
+              │
+              ▼
+        CDEKOrderService
+              │
+              ▼
+        POST /orders
+              │
+              ▼
+             CDEK
+```
+
+### 3. Проверка корзины и резервирование товара
+
+`DeliveryFacade.create_order()` выполняется внутри `transaction.atomic`.
+
+Сначала получается корзина пользователя:
+
+```text
 User
  │
  ▼
 Cart
  │
- │ добавление товаров
+ ▼
+CartItem
+```
+
+Если корзина отсутствует или пуста, создание заказа прекращается.
+
+Для товаров из корзины собираются `UniqueProduct`.
+
+Далее используется блокировка:
+
+```text
+CartItem
+   │
+   ▼
+UniqueProduct
+   │
+   ▼
+select_for_update()
+```
+
+Это необходимо для предотвращения ситуации, когда несколько заказов одновременно изменяют остаток одного товара.
+
+Для каждого товара проверяется:
+- товар существует;
+- количество больше нуля;
+- на складе достаточно товара.
+
+После успешной проверки товар резервируется:
+
+```text
+stock = stock - amount
+```
+
+При этом товар ещё не считается окончательно проданным.
+
+Для этого используется:
+
+```python
+class StockReservationStatus(models.IntegerChoices):
+    RESERVED = 1, "Зарезервирован"
+    CONFIRMED = 2, "Подтверждён"
+    RELEASED = 3, "Возвращён"
+```
+
+Начальное состояние:
+
+```text
+RESERVED
+```
+
+### 4. Повторный расчёт доставки
+
+После резервирования товара выполняется повторный расчёт доставки.
+
+Это необходимо, чтобы при непосредственном оформлении заказа проверить актуальность данных доставки и выбранных тарифов.
+
+```text
+Cart
  │
  ▼
-Расчет стоимости товаров
- │
- │ выбор способа доставки
- ▼
-Предварительный расчет доставки
+проверка товара
  │
  ▼
-Проверка актуальности товаров
- │
- ├── товар существует
- ├── актуальная цена
- └── достаточно товара на складе
+резервирование stock
  │
  ▼
-Резервирование товара
+расчёт доставки
+ │
+ ├── ошибка → заказ не создаётся
+ │
+ └── успешно
+       │
+       ▼
+    создание Order
+```
+
+Для каждого магазина определяется выбранный тариф.
+
+В HTTP-запросе ключи магазинов приходят как строки:
+
+```json
+{
+    "selected_tariffs": {
+        "1": 137,
+        "4": 121
+    }
+}
+```
+
+В `OrderViewSet` они нормализуются в `int`:
+
+```python
+selected_tariffs = {
+    int(shop_id): tariff_code
+    for shop_id, tariff_code
+    in serializer.validated_data["selected_tariffs"].items()
+}
+```
+
+Аналогично нормализуются ключи `delivery_data`.
+
+Внутри бизнес-логики используются:
+
+```python
+{
+    1: 137,
+    4: 121
+}
+```
+
+### 5. Создание Order
+
+После успешной проверки корзины и доставки создаётся:
+
+```text
+Order
+```
+
+Начальный статус:
+
+```python
+OrderStatus.PROCESSING
+```
+
+Статусы заказа:
+
+```python
+class OrderStatus(models.IntegerChoices):
+    PROCESSING = 1, "В обработке"
+    CONFIRMED = 2, "Подтверждён"
+    PARTIALLY_FAILED = 3, "Частично с ошибкой"
+    PARTIALLY_DELIVERED = 4, "Частично доставлен"
+    COMPLETED = 5, "Завершён"
+    FAILED = 6, "Ошибка"
+    CANCELLED = 7, "Отменён"
+```
+
+`Order` является агрегирующей сущностью.
+
+Его статус не является непосредственным статусом CDEK.
+
+Статус `Order` вычисляется на основании статусов всех его `OrderDelivery`.
+
+### 6. Создание OrderDelivery
+
+Для каждого магазина создаётся отдельное отправление:
+
+```python
+OrderDelivery.objects.create(
+    order=order,
+    shop=shop,
+    delivery_type=shop.carrier,
+)
+```
+
+Начальный статус:
+
+```python
+OrderDeliveryStatus.PROCESSING
+```
+
+Статусы отправления:
+
+```python
+class OrderDeliveryStatus(models.IntegerChoices):
+    PROCESSING = 1, "В обработке"
+    CONFIRMED = 2, "Подтверждена"
+    IN_TRANSIT = 3, "В пути"
+    DELIVERED = 4, "Доставлена"
+    FAILED = 5, "Ошибка"
+    CANCELLED = 6, "Отменена"
+```
+
+`OrderDelivery` является универсальной сущностью и не зависит от конкретной транспортной компании.
+
+### 7. Создание OrderProduct
+
+Все товары, относящиеся к магазину, привязываются к соответствующему `OrderDelivery`.
+
+Создаётся:
+
+```text
+OrderProduct
+```
+
+При этом сохраняются значения на момент оформления заказа:
+
+```text
+unique_product
+amount
+price
+product_name
+```
+
+Особенно важны:
+
+```text
+price
+product_name
+```
+
+Они являются историческим снимком данных товара.
+
+Например:
+
+```text
+На момент заказа:
+
+price = 12000
+product_name = "Кроссовки Nike Air, белый, 42"
+```
+
+Если после оформления продавец:
+- изменит цену;
+- переименует товар;
+- удалит товар;
+
+данные уже созданного `OrderProduct` не изменятся.
+
+Поэтому заказ сохраняет состояние каталога на момент покупки.
+
+### 8. Создание CdekDelivery
+
+Для каждого `OrderDelivery` с типом CDEK создаётся:
+
+```text
+CdekDelivery
+```
+
+Связь:
+
+```text
+Order
  │
  ▼
-Расчет итоговой стоимости
- │
- ├── стоимость товаров
- └── стоимость доставки
+OrderDelivery
  │
  ▼
-Создание Order
+CdekDelivery
+```
+
+`CdekDelivery` содержит данные, необходимые для работы с CDEK:
+
+```text
+tariff_code
+delivery_mode
+delivery_mode_name
+
+shipment_point
+delivery_point
+
+location_from
+location_from_region
+location_from_district
+location_from_country
+address_from
+postal_code_from
+
+location_to
+location_to_region
+location_to_district
+location_to_country
+address_to
+postal_code_to
+
+cdek_uuid
+preliminary_price
+
+shipment_track_id
+shipment_price
+
+order_status
+stock_status
+```
+
+### 9. Формирование данных CDEK
+
+За формирование данных для CDEK отвечает:
+
+```text
+CDEKOrderService
+```
+
+Основная последовательность:
+
+```text
+CDEKOrderService
+       │
+       ├── _create_cdek_delivery()
+       │
+       ├── _fill_from()
+       │
+       ├── _fill_to()
+       │
+       └── _generate_cdek_order_data()
+```
+
+`CDEKOrderService` определяет, какие данные нужны в зависимости от выбранного режима доставки.
+
+Режим доставки берётся из выбранного тарифа.
+
+Пользователь не передаёт `delivery_mode` отдельно.
+
+### 10. Данные отправителя
+
+Для отправителя используется информация магазина.
+
+Если отправление начинается **от двери**, используются:
+
+```text
+Shop.location_from
+Shop.location_from_region
+Shop.location_from_district
+Shop.location_from_country
+Shop.address
+Shop.postal_code
+```
+
+Эти данные дополнительно валидируются.
+
+Если отправление начинается с ПВЗ, склада или постамата, используется:
+
+```text
+Shop.delivery_point
+```
+
+Таким образом:
+
+```text
+Shop
  │
- ├── OrderProduct
+ ├── location_from
+ ├── address
+ ├── postal_code
  │
- └── OrderDelivery
+ └── delivery_point
         │
-        └── регистрация отправления в CDEK
+        ▼
+   CdekDelivery
+```
+
+### 11. Данные получателя
+
+Для доставки до двери город, регион и другие данные местоположения берутся из профиля пользователя:
+
+```text
+User.location_to
+User.location_to_region
+User.location_to_district
+User.location_to_country
+```
+
+А адрес и почтовый индекс передаются непосредственно при оформлении конкретного заказа:
+
+```json
+{
+    "address_to": "ул. Стара Загора, д. 130",
+    "postal_code_to": "443114"
+}
+```
+
+Это позволяет хранить в заказе именно тот адрес, который был указан пользователем при покупке.
+
+Для доставки в ПВЗ или постамат передаётся код пункта:
+
+```json
+{
+    "delivery_point": "SAM12"
+}
+```
+
+### 12. Формирование товаров и упаковки
+
+Для CDEK товары преобразуются в формат API транспортной компании.
+
+Для каждого `OrderProduct` формируется элемент CDEK:
+
+```text
+OrderProduct
+      │
+      ▼
+adapter.generate_order_item()
+      │
+      ▼
+CDEK item
+```
+
+Вес отправления рассчитывается по товарам:
+
+```text
+weight товара × количество
+```
+
+После этого формируется упаковка:
+
+```text
+OrderProduct
+      │
+      ▼
+расчёт общего веса
+      │
+      ▼
+CDEK package
+```
+
+### 13. Регистрация отправления в CDEK
+
+`CDEKOrderService` выполняется непосредственно во время создания заказа.
+
+Последовательность:
+
+```text
+DeliveryFacade.create_order()
+        │
+        ▼
+CDEKOrderService.create_delivery()
+        │
+        ▼
+создание CdekDelivery
+        │
+        ▼
+формирование payload
+        │
+        ▼
+CDEKAdapter.create_delivery()
+        │
+        ▼
+POST /orders
+        │
+        ▼
+CDEK
+```
+
+### 14. Обработка ответа POST CDEK
+
+После `POST /orders` CDEK возвращает результат регистрации.
+
+Первым делом сохраняется информация о запросе:
+
+```text
+CdekRequestLogService
+        │
+        ▼
+CdekRequestLog
+```
+
+В журнал сохраняются:
+
+```text
+request_type
+state
+date_time
+error_code
+error_message
+response_data
+cdek_uuid
+```
+
+Если CDEK вернул запрос со статусом:
+
+```text
+INVALID
+```
+
+регистрация считается ошибочной и выбрасывается:
+
+```text
+CDEKBusinessError
+```
+
+Если UUID отсутствует, также возникает бизнес-ошибка.
+
+### 15. Сохранение UUID
+
+После успешного POST из ответа CDEK извлекается UUID:
+
+```text
+CDEK response
+      │
+      ▼
+entity.uuid
+      │
+      ▼
+CdekDelivery.cdek_uuid
+```
+
+UUID является идентификатором отправления в CDEK до появления окончательного номера отправления.
+
+### 16. Первый GET после создания
+
+После сохранения UUID сервис **сразу выполняет первый GET**:
+
+```text
+GET /orders/{uuid}
+```
+
+То есть фактическая последовательность такая:
+
+```text
+POST /orders
+      │
+      ▼
+получение UUID
+      │
+      ▼
+сохранение CdekDelivery.cdek_uuid
+      │
+      ▼
+GET /orders/{uuid}
+      │
+      ▼
+сохранение ответа
+      │
+      ▼
+сохранение статусов
+      │
+      ▼
+Kafka event
+```
+
+На этом этапе `cdek_number` ещё может отсутствовать.
+
+Это является нормальным состоянием, если CDEK ещё обрабатывает регистрацию.
+
+### 17. История запросов CDEK
+
+Все запросы CDEK сохраняются через:
+
+```text
+CdekRequestLogService
+```
+
+Для каждого запроса создаётся:
+
+```text
+CdekRequestLog
+```
+
+Таким образом, можно восстановить историю взаимодействия с CDEK:
+
+```text
+CDEK API
+   │
+   ├── POST /orders
+   │       │
+   │       └── CdekRequestLog
+   │
+   ├── GET /orders/{uuid}
+   │       │
+   │       └── CdekRequestLog
+   │
+   ├── GET /orders/{uuid}
+   │       │
+   │       └── CdekRequestLog
+   │
+   └── ...
+```
+
+В `response_data` сохраняется полный ответ CDEK.
+
+Это позволяет анализировать ошибки и состояние регистрации независимо от текущего состояния модели.
+
+### 18. История статусов CDEK
+
+Ответ `GET /orders/{uuid}` содержит список:
+
+```text
+entity.statuses
+```
+
+Эти статусы сохраняются через:
+
+```text
+CdekOrderStatusService
+```
+
+Для каждого статуса создаётся:
+
+```text
+CdekDeliveryStatusHistory
+```
+
+Связь:
+
+```text
+CdekDelivery
+     │
+     └── CdekDeliveryStatusHistory
+             │
+             ├── status_code
+             ├── status_name
+             ├── status_date
+             ├── city
+             └── is_deleted
+```
+
+История не заменяется новым статусом — новые состояния добавляются отдельными записями.
+
+### 19. Преобразование статуса CDEK во внутренний статус
+
+CDEK использует собственные коды статусов.
+
+Внутренняя система использует:
+
+```python
+OrderDeliveryStatus
+```
+
+Для преобразования используется:
+
+```text
+CdekDeliveryStatusMapper
+```
+
+Архитектура:
+
+```text
+CDEK status
+     │
+     ▼
+CdekDeliveryStatusMapper
+     │
+     ▼
+OrderDeliveryStatus
+```
+
+Например:
+
+```text
+CDEK 1
+   ↓
+OrderDeliveryStatus.CONFIRMED
+
+CDEK 3
+   ↓
+OrderDeliveryStatus.IN_TRANSIT
+
+CDEK 4
+   ↓
+OrderDeliveryStatus.DELIVERED
+
+CDEK 5
+   ↓
+OrderDeliveryStatus.FAILED
+```
+
+Для статуса CDEK `1000` дополнительно используется `status_name`, поскольку код `1000` имеет несколько вариантов состояния.
+
+### 20. CdekStatusService
+
+Основная обработка актуального состояния отправления выполняется:
+
+```text
+CdekStatusService
+```
+
+Он:
+1. выполняет GET заказа CDEK;
+2. сохраняет запрос в `CdekRequestLog`;
+3. сохраняет историю статусов;
+4. определяет последний статус;
+5. преобразует его через `CdekDeliveryStatusMapper`;
+6. обновляет `OrderDelivery.status`;
+7. обновляет агрегированный `Order.status`.
+
+Последний статус определяется по:
+
+```text
+status.date_time
+```
+
+То есть выбирается самый поздний статус:
+
+```text
+response.entity.statuses
+        │
+        ▼
+max(date_time)
+        │
+        ▼
+последний статус CDEK
+```
+
+### 21. Обновление OrderDelivery
+
+Полученный статус CDEK не записывается напрямую в `Order.status`.
+
+Сначала выполняется:
+
+```text
+CDEK status
+    ↓
+CdekDeliveryStatusMapper
+    ↓
+OrderDelivery.status
+```
+
+Например:
+
+```text
+CDEK:
+DELIVERED
+   ↓
+CdekDeliveryStatusMapper
+   ↓
+OrderDelivery.status = DELIVERED
+```
+
+Это позволяет не связывать модель общего заказа с конкретной транспортной компанией.
+
+### 22. Агрегация статуса Order
+
+После изменения `OrderDelivery.status` вызывается:
+
+```text
+OrderStatusService
+```
+
+Он анализирует статусы всех отправлений заказа:
+
+```text
+Order
  │
- ▼
-Оплата заказа
+ ├── OrderDelivery #1 → status
+ │
+ ├── OrderDelivery #2 → status
+ │
+ └── OrderDelivery #3 → status
+          │
+          ▼
+   OrderStatusService
+          │
+          ▼
+      Order.status
+```
+
+Основные правила:
+
+```text
+Все PROCESSING
+      ↓
+Order.PROCESSING
+```
+
+```text
+Все CONFIRMED
+      ↓
+Order.CONFIRMED
+```
+
+```text
+Все DELIVERED
+      ↓
+Order.COMPLETED
+```
+
+```text
+Все FAILED
+      ↓
+Order.FAILED
+```
+
+```text
+Есть FAILED,
+но не все FAILED
+      ↓
+Order.PARTIALLY_FAILED
+```
+
+```text
+Есть DELIVERED,
+но не все DELIVERED
+      ↓
+Order.PARTIALLY_DELIVERED
+```
+
+Если состояние не попадает под специальные условия, заказ остаётся в:
+
+```text
+PROCESSING
+```
+
+Таким образом, `OrderStatusService` является отдельным уровнем агрегации.
+
+### 23. Kafka и асинхронная проверка регистрации
+
+После первого GET сервис публикует событие:
+
+```text
+cdek.order.accepted
+```
+
+Событие содержит:
+
+```json
+{
+    "event": "cdek.order.accepted",
+    "cdek_delivery_id": 123,
+    "cdek_uuid": "..."
+}
+```
+
+Схема:
+
+```text
+CDEKOrderService
+       │
+       ▼
+KafkaProducer
+       │
+       ▼
+cdek.order.accepted
+       │
+       ▼
+KafkaConsumer
+       │
+       ▼
+Celery
+       │
+       ▼
+check_cdek_order_status()
+```
+
+Kafka в данной архитектуре используется не для самого создания заказа, а для запуска асинхронного процесса проверки результата регистрации.
+
+### 24. Kafka Consumer
+
+Consumer подписан на:
+
+```text
+cdek.order.accepted
+```
+
+После получения сообщения:
+
+```text
+Kafka
+  │
+  ▼
+KafkaConsumer
+  │
+  ▼
+json.loads()
+  │
+  ▼
+cdek_delivery_id
+  │
+  ▼
+check_cdek_order_status.delay/apply_async
+```
+
+Задача Celery запускается с задержкой:
+
+```text
+countdown=30
+```
+
+Таким образом, система не выполняет постоянный синхронный запрос к CDEK.
+
+### 25. Celery и повторная проверка
+
+Celery-задача:
+
+```text
+check_cdek_order_status
+```
+
+создаёт:
+
+```text
+CdekStatusService
+```
+
+и вызывает:
+
+```python
+service.process(
+    cdek_delivery_id=cdek_delivery_id,
+)
+```
+
+Далее выполняется:
+
+```text
+Celery
+  │
+  ▼
+CdekStatusService.process()
+  │
+  ▼
+check_order()
+  │
+  ▼
+GET /orders/{uuid}
+  │
+  ▼
+CDEK
+```
+
+### 26. Определение состояния регистрации CDEK
+
+Для определения результата регистрации используется не наличие `cdek_number`, а последний запрос типа:
+
+```text
+CREATE
+```
+
+из:
+
+```text
+response.requests
+```
+
+Метод:
+
+```text
+get_create_request()
+```
+
+ищет последний запрос:
+
+```text
+request.type == "CREATE"
+```
+
+В зависимости от его состояния выполняются разные сценарии.
+
+### 27. Сценарий ACCEPTED
+
+Если:
+
+```text
+CREATE.state = ACCEPTED
+```
+
+регистрация ещё не завершена.
+
+Товар остаётся зарезервированным:
+
+```text
+StockReservationStatus.RESERVED
+```
+
+Celery повторно запускает саму себя:
+
+```text
+check_cdek_order_status
+        │
+        ▼
+countdown=30
+        │
+        ▼
+повторный GET CDEK
+```
+
+Получается цикл:
+
+```text
+GET CDEK
+   │
+   ▼
+CREATE = ACCEPTED
+   │
+   ▼
+Celery retry 30 сек
+   │
+   ▼
+GET CDEK
+   │
+   ▼
+CREATE = ACCEPTED
+   │
+   ▼
+...
+```
+
+### 28. Сценарий SUCCESSFUL
+
+Если:
+
+```text
+CREATE.state = SUCCESSFUL
+```
+
+регистрация отправления считается успешно завершённой.
+
+В этом случае система проверяет:
+
+```text
+entity.cdek_number
+entity.delivery_detail.total_sum
+```
+
+После успешной проверки:
+
+```text
+cdek_number
+      ↓
+CdekDelivery.shipment_track_id
+```
+
+и:
+
+```text
+total_sum
+      ↓
+CdekDelivery.shipment_price
+```
+
+Статус резервирования изменяется:
+
+```text
+RESERVED
+   ↓
+CONFIRMED
+```
+
+После подтверждения товара корзина очищается для соответствующих товаров.
+
+### 29. Подтверждение резервирования
+
+Метод:
+
+```text
+confirm_cdek_delivery()
+```
+
+выполняется внутри транзакции и блокирует `CdekDelivery`.
+
+Это обеспечивает идемпотентность.
+
+Если доставка уже находится не в:
+
+```text
+RESERVED
+```
+
+повторная обработка ничего не делает.
+
+Таким образом:
+
+```text
+Celery task #1
+      │
+      ▼
+CONFIRMED
+      │
+      ▼
+Celery task #2
+      │
+      ▼
+ничего не изменяет
+```
+
+Это защищает от повторного подтверждения.
+
+### 30. Очистка корзины
+
+После успешной регистрации CDEK:
+
+```text
+OrderProduct
+      │
+      ▼
+unique_product_id
+      │
+      ▼
+CartService.clear_items()
+      │
+      ▼
+CartItem удаляется
+```
+
+При этом удаляются только товары, относящиеся к успешно подтверждённой доставке.
+
+Сам `OrderProduct` сохраняется.
+
+Таким образом:
+
+```text
+CartItem
+   ↓
+удаляется после успешной регистрации
+
+OrderProduct
+   ↓
+остаётся навсегда как часть истории заказа
+```
+
+### 31. Сценарий ошибки регистрации
+
+Если последний запрос `CREATE` имеет состояние, отличное от:
+
+```text
+ACCEPTED
+SUCCESSFUL
+```
+
+регистрация считается неуспешной.
+
+В этом случае:
+
+```text
+StockReservationStatus.RESERVED
+             │
+             ▼
+StockReservationStatus.RELEASED
+```
+
+Зарезервированный товар возвращается на склад.
+
+Процесс:
+
+```text
+CdekDelivery
+     │
+     ▼
+OrderProduct
+     │
+     ▼
+UniqueProduct
+     │
+     ▼
+блокировка товара
+     │
+     ▼
+StockService.increase()
+     │
+     ▼
+stock восстановлен
+```
+
+Корзина при этом **не очищается**, поэтому пользователь может повторить оформление заказа.
+
+### 32. Ошибки CDEK
+
+При ошибке регистрации из `CREATE` извлекаются:
+
+```text
+error.code
+error.message
+```
+
+и формируется:
+
+```text
+CDEKOrderFailedEvent
+```
+
+Пример:
+
+```json
+{
+    "event": "cdek.order.failed",
+    "cdek_delivery_id": 123,
+    "cdek_uuid": "...",
+    "errors": [
+        {
+            "code": "...",
+            "message": "..."
+        }
+    ]
+}
+```
+
+Событие публикуется в:
+
+```text
+cdek.order.failed
+```
+
+### 33. Успешная регистрация и событие ready
+
+После успешной регистрации формируется:
+
+```text
+CDEKOrderReadyEvent
+```
+
+Пример:
+
+```json
+{
+    "event": "cdek.order.ready",
+    "cdek_delivery_id": 123,
+    "cdek_uuid": "...",
+    "cdek_number": "1234567890"
+}
+```
+
+Событие публикуется в:
+
+```text
+cdek.order.ready
+```
+
+На данном этапе в представленном коде реализована публикация события.
+
+Отдельный consumer для `cdek.order.ready` или `cdek.order.failed` в приведённой реализации не показан.
+
+### 34. Полная схема регистрации CDEK
+
+Фактический процесс выглядит следующим образом:
+
+```text
+                         USER
+                          │
+                          ▼
+                  POST /api/orders/
+                          │
+                          ▼
+                  OrderViewSet.create
+                          │
+                          ▼
+               DeliveryFacade.create_order
+                          │
+             ┌────────────┴────────────┐
+             │                         │
+             ▼                         ▼
+        проверка Cart              расчёт доставки
+             │                         │
+             └────────────┬────────────┘
+                          ▼
+                  резервирование stock
+                          │
+                          ▼
+                       Order
+                          │
+                          ▼
+                    OrderDelivery
+                          │
+                          ▼
+                    OrderProduct
+                          │
+                          ▼
+                   CDEKOrderService
+                          │
+                          ▼
+                 создание CdekDelivery
+                          │
+                          ▼
+                формирование payload
+                          │
+                          ▼
+                 CDEKAdapter.create
+                          │
+                          ▼
+                     POST /orders
+                          │
+                          ▼
+                         CDEK
+                          │
+                          ▼
+                     CDEK response
+                          │
+             ┌────────────┴────────────┐
+             │                         │
+             ▼                         ▼
+       CdekRequestLog          получение UUID
+                                       │
+                                       ▼
+                             CdekDelivery.cdek_uuid
+                                       │
+                                       ▼
+                              GET /orders/{uuid}
+                                       │
+                                       ▼
+                                     CDEK
+                                       │
+                         ┌─────────────┴─────────────┐
+                         │                           │
+                         ▼                           ▼
+                CdekRequestLog          CdekDeliveryStatusHistory
+                         │                           │
+                         └─────────────┬─────────────┘
+                                       ▼
+                              cdek.order.accepted
+                                       │
+                                       ▼
+                                Kafka Consumer
+                                       │
+                                       ▼
+                                  Celery Task
+                                       │
+                                       ▼
+                             CdekStatusService
+                                       │
+                                       ▼
+                              GET /orders/{uuid}
+                                       │
+                                       ▼
+                               анализ CREATE
+                         ┌─────────────┼──────────────┐
+                         │             │              │
+                         ▼             ▼              ▼
+                     ACCEPTED      SUCCESSFUL      ERROR
+                         │             │              │
+                         ▼             ▼              ▼
+                      retry       подтверждение    RELEASED
+                       30 сек           │              │
+                         │              ▼              ▼
+                         │        stock CONFIRMED   stock restored
+                         │              │              │
+                         │              ▼              ▼
+                         │         очистка Cart      Cart остаётся
+                         │              │
+                         │              ▼
+                         │       cdek.order.ready
+                         │
+                         └────── повторный цикл
+```
+
+### 35. Полная схема статусов
+
+Система использует три разных уровня состояния.
+
+#### Статус общего заказа
+
+```text
+Order.status
+```
+
+Определяется:
+
+```text
+OrderStatusService
+```
+
+#### Статус отдельного отправления
+
+```text
+OrderDelivery.status
+```
+
+Определяется через:
+
+```text
+CdekDeliveryStatusMapper
+```
+
+#### Статус резервирования товара
+
+```text
+CdekDelivery.stock_status
+```
+
+Определяется процессом регистрации CDEK:
+
+```text
+RESERVED
+    │
+    ├── SUCCESSFUL ──► CONFIRMED
+    │
+    └── ERROR ───────► RELEASED
+```
+
+Таким образом:
+
+```text
+                  Order
+                    │
+             OrderStatusService
+                    ▲
+                    │
+                    │
+              OrderDelivery
+                    │
+          CdekDeliveryStatusMapper
+                    ▲
+                    │
+              CDEK statuses
+
+
+              CdekDelivery
+                    │
+                    │
+             stock_status
+                    │
+          ┌─────────┴─────────┐
+          ▼                   ▼
+       RESERVED           CONFIRMED
+          │
+          ▼
+       RELEASED
+```
+
+### 36. Архитектура сервисов
+
+Основные сервисы взаимодействуют следующим образом:
+
+```text
+DeliveryFacade
+      │
+      ▼
+CDEKOrderService
+      │
+      ├── CDEKAdapter
+      │
+      ├── CdekRequestLogService
+      │
+      └── CdekOrderStatusService
+                         │
+                         ▼
+                CdekDeliveryStatusHistory
+
+
+KafkaProducer
+      │
+      ▼
+cdek.order.accepted
+      │
+      ▼
+KafkaConsumer
+      │
+      ▼
+Celery
+      │
+      ▼
+CdekStatusService
+      │
+      ├── CdekRequestLogService
+      │
+      ├── CdekOrderStatusService
+      │
+      ├── CdekDeliveryStatusMapper
+      │
+      └── OrderStatusService
+                         │
+                         ▼
+                       Order
+```
+
+### 37. Разделение ответственности
+
+#### `OrderViewSet`
+
+Отвечает за HTTP-уровень:
+
+```text
+HTTP request
+    ↓
+валидация serializer
+    ↓
+нормализация данных
+    ↓
+DeliveryFacade
+    ↓
+HTTP response
+```
+
+#### `DeliveryFacade`
+
+Оркестрирует создание пользовательского заказа:
+
+```text
+Cart
+Stock
+Delivery calculation
+Order
+OrderDelivery
+OrderProduct
+Delivery service
+```
+
+#### `CDEKOrderService`
+
+Отвечает за создание отправления в CDEK:
+
+```text
+CdekDelivery
+    ↓
+payload
+    ↓
+POST CDEK
+    ↓
+UUID
+    ↓
+первый GET
+    ↓
+Kafka event
+```
+
+#### `CdekStatusService`
+
+Отвечает за последующую проверку состояния регистрации:
+
+```text
+GET CDEK
+    ↓
+request log
+    ↓
+status history
+    ↓
+определение CREATE
+    ↓
+подтверждение / retry / release
+```
+
+---
+
+#### `CdekRequestLogService`
+
+Сохраняет историю запросов и ответов CDEK:
+
+```text
+CDEK request
+     ↓
+CdekRequestLog
+```
+
+#### `CdekOrderStatusService`
+
+Сохраняет историю статусов CDEK:
+
+```text
+CDEK statuses
+      ↓
+CdekDeliveryStatusHistory
+```
+
+Также обновляет:
+
+```text
+CdekDelivery.order_status
+```
+
+где хранится последний код статуса CDEK.
+
+#### `CdekDeliveryStatusMapper`
+
+Изолирует CDEK-специфичные статусы от внутренней модели:
+
+```text
+CDEK status
+     ↓
+mapper
+     ↓
+OrderDeliveryStatus
+```
+
+#### `OrderStatusService`
+
+Агрегирует статусы отдельных отправлений:
+
+```text
+OrderDelivery.status
+        ↓
+OrderStatusService
+        ↓
+Order.status
 ```
 
 
-Shop
+### 38. Просмотр заказа
 
-| id  | name             | legal_info                     | owner | location_from | carrier |
-| --- | ---------------- | ------------------------------ | ----- | ------------- | ------- |
-| 1   | Классный магазин | г. Самара, ул. Мичурина, дом 2 | 9     | Самара        | 1       |
+Для просмотра используется:
 
+```text
+GET /api/orders/{id}/
+```
 
-Product
+Запрос разрешает получить только заказ текущего пользователя:
 
-| id  | name               | shop |
-| --- | ------------------ | ---- |
-| 1   | Кроссовки Nike Air | 1    |
-| 2   | Джинсы Levi's 501  | 1    |
+```python
+.filter(
+    id=pk,
+    owner=request.user,
+)
+```
 
-UniqueProduct
+Если заказ принадлежит другому пользователю или отсутствует:
 
-| id  | product_id | ware_key  | color  | size | weight | price | Stock | width | length | weight |
-| --- | ---------- | --------- | ------ | ---- | ------ | ----- | ----- | ----- | ------ | ------ |
-| 1   | 1          | 501245789 | Белый  | 42   | 800    | 12000 | 5     | 8     | 42     | 8      |
-| 2   | 1          | 689545123 | Черный | 42   | 800    | 12000 | 2     | 8     | 42     | 8      |
-| 3   | 1          | 568945127 | Белый  | 43   | 850    | 13000 | 0     | 8     | 43     | 9      |
-| 4   | 2          | 689547812 | Синий  | XS   | 550    | 9500  | 3     | 20    | 15     | 7      |
+```text
+404 Заказ не найден.
+```
 
+При получении заказа предварительно загружаются:
+
+```text
+deliveries
+deliveries__items
+deliveries__cdek
+deliveries__cdek__status_history
+```
+
+Структура ответа:
+
+```text
 Order
+ │
+ ├── id
+ ├── created_at
+ ├── status
+ │
+ └── deliveries
+       │
+       ├── id
+       ├── shop
+       ├── delivery_type
+       ├── status
+       ├── created_at
+       │
+       ├── products
+       │     ├── unique_product
+       │     ├── product_name
+       │     ├── amount
+       │     └── price
+       │
+       └── cdek
+             ├── tariff_code
+             ├── delivery_mode
+             ├── shipment_point
+             ├── delivery_point
+             ├── shipment_track_id
+             ├── shipment_price
+             ├── stock_status
+             ├── cdek_uuid
+             └── status_history
+```
 
-| id  | owner | created_at |
-| --- | ----- | ---------- |
-| 7   | 4     | 07.07.2026 |
+Таким образом, клиент может получить как текущее состояние заказа, так и информацию по каждому отдельному отправлению и историю статусов CDEK.
 
-OrderProduct
+### 39. Итоговая схема системы заказа
 
-| id  | order_id | unique_product_id | product_name                   | amount | price | order_delivery |
-| --- | -------- | ----------------- | ------------------------------ | ------ | ----- | -------------- |
-| 1   | 7        | 1                 | Кроссовки Nike Air, белый, 42  | 1      | 12000 | 1              |
-| 2   | 7        | 2                 | Кроссовки Nike Air, черный, 42 | 1      | 12000 | 1              |
-| 3   | 7        | 4                 | Джинсы Levi's 501, синий, XS   | 2      | 9500  | 1              |
-Здесь `price` — **цена на момент оформления заказа**.
-Здесь 'product_name' - **название товара на момент оформления заказа**
-Т.е. даже если продавец удалит товар или переименует его, заказ останется неизменным и будет отражать состояние каталога на момент покупки.
+```text
+                         USER
+                          │
+                          ▼
+                     CART / CART ITEM
+                          │
+                          ▼
+                  оформление заказа
+                          │
+                          ▼
+                 OrderViewSet.create
+                          │
+                          ▼
+                DeliveryFacade.create_order
+                          │
+              ┌───────────┴───────────┐
+              │                       │
+              ▼                       ▼
+        проверка товара         расчёт доставки
+              │                       │
+              └───────────┬───────────┘
+                          ▼
+                  резервирование stock
+                          │
+                          ▼
+                        ORDER
+                          │
+             ┌────────────┴────────────┐
+             │                         │
+             ▼                         ▼
+      OrderDelivery #1          OrderDelivery #2
+             │                         │
+             ▼                         ▼
+       OrderProduct(s)           OrderProduct(s)
+             │                         │
+             ▼                         ▼
+       CdekDelivery               CdekDelivery
+             │                         │
+             ▼                         ▼
+       CDEKOrderService           CDEKOrderService
+             │                         │
+             ▼                         ▼
+          POST CDEK                  POST CDEK
+             │                         │
+             └────────────┬────────────┘
+                          ▼
+                    CDEK API
+                          │
+                          ▼
+                   первый GET UUID
+                          │
+                          ▼
+                cdek.order.accepted
+                          │
+                          ▼
+                    Kafka Consumer
+                          │
+                          ▼
+                     Celery Task
+                          │
+                          ▼
+                CdekStatusService
+                          │
+                          ▼
+                    GET CDEK
+                          │
+                 ┌────────┴────────┐
+                 │                 │
+              ACCEPTED         SUCCESSFUL
+                 │                 │
+                 ▼                 ▼
+             retry 30с       CONFIRMED
+                                   │
+                         ┌─────────┴─────────┐
+                         ▼                   ▼
+                   stock CONFIRMED      очистка Cart
+                         │
+                         ▼
+                  cdek.order.ready
+
+
+              При ошибке регистрации:
+
+                    CREATE ≠
+              ACCEPTED / SUCCESSFUL
+                         │
+                         ▼
+                     RELEASED
+                         │
+                         ▼
+                 возврат stock
+                         │
+                         ▼
+                  Cart остаётся
+
+
+Статусы доставки:
+
+CDEK status
+     │
+     ▼
+CdekDeliveryStatusMapper
+     │
+     ▼
+OrderDelivery.status
+     │
+     ▼
+OrderStatusService
+     │
+     ▼
+Order.status
+```
+
+### 40. Важное архитектурное разделение
+
+В системе намеренно разделены три понятия:
+
+```text
+1. Состояние заказа
+   Order.status
+
+2. Состояние конкретного отправления
+   OrderDelivery.status
+
+3. Состояние резервирования товара
+   CdekDelivery.stock_status
+```
+
+Они не должны смешиваться.
+
+Например, отправление может иметь:
+
+```text
+OrderDelivery.status = CONFIRMED
+```
+
+и одновременно:
+
+```text
+CdekDelivery.stock_status = CONFIRMED
+```
+
+а общий:
+
+```text
+Order.status = PROCESSING
+```
+
+если в заказе есть ещё одно отправление, которое пока находится в обработке.
+
+Это позволяет корректно поддерживать заказ с несколькими магазинами и несколькими независимыми отправлениями.
 
 
 ## Архитектура связи доставки с товарами заказа
@@ -2423,14 +6884,14 @@ delivery/
 │
 ├── schemas/
 │   ├── tariffs.py             # Pydantic Request/Response
-│   ├── offices.py
+│   ├── locations.py
 │   ├── orders.py
 │   ├── webhooks.py
 │   └── common.py
 │
 ├── services/
 │   ├── tariffs.py # бизнес-логика маркетплейса работ с тарифами
-│   ├── offices.py
+│   ├── locations.py
 │   ├── orders.py
 │   ├── webhooks.py
 │   └── tracking.py # status
@@ -2650,7 +7111,7 @@ _Модуль «Расчет стоимости доставки»: метод �
 
 Справочник тарифов СДЭК хранится единым набором данных для всей платформы. Тарифы не привязываются к конкретному магазину, так как API СДЭК возвращает общий список доступных тарифов по договору.
 
-Магазины используют общий справочник через локальные настройки `ShopDeliverySetting`, где продавец выбирает доступные тарифы для своего магазина.
+Магазины используют общий справочник через локальные настройки `CDEKShopDeliverySetting`, где продавец выбирает доступные тарифы для своего магазина.
 
 Синхронизация тарифов выполняется периодической Celery-задачей `sync_cdek_tariffs`.
 
@@ -2923,9 +7384,9 @@ Redis выполняет две функции:
 
 Для хранения доступных тарифов используется модель **`CDEKTariff`**, содержащая актуальные тарифы, полученные из API CDEK. Справочник тарифов ежедневно синхронизируется с API CDEK, сохраняется в PostgreSQL, после чего экспортируется в Redis (`cdek:tariffs`), который используется как кэш при работе личного кабинета продавца.
 
-Для хранения выбранных продавцом тарифов используется модель **`ShopDeliverySetting`**, связывающая магазин с выбранными тарифами CDEK.
+Для хранения выбранных продавцом тарифов используется модель **`CDEKShopDeliverySetting`**, связывающая магазин с выбранными тарифами CDEK.
 
-Логика работы реализована в сервисе **`ShopDeliverySettingService`** (`seller/services.py`).
+Логика работы реализована в сервисе **`CDEKShopDeliverySettingService`** (`seller/services.py`).
 
 При сохранении настроек магазина выполняются следующие действия:
 
@@ -2934,7 +7395,7 @@ Redis выполняет две функции:
 3. При обнаружении недоступных или устаревших тарифов генерируется исключение `ValueError`, а сохранение отменяется.
 4. Получение объектов `CDEKTariff` по выбранным кодам.
 5. Удаление ранее сохраненных настроек магазина.
-6. Массовое сохранение новых настроек (`bulk_create`) в таблицу `ShopDeliverySetting`.
+6. Массовое сохранение новых настроек (`bulk_create`) в таблицу `CDEKShopDeliverySetting`.
 
 Вся операция выполняется внутри атомарной транзакции (`transaction.atomic`), поэтому изменения либо сохраняются полностью, либо не сохраняются вовсе.
 
@@ -3195,7 +7656,7 @@ DeliveryFactory.cleanup()
 cleanup_cdek()
  │
  ▼
-ShopDeliverySettingService.clear()
+CDEKShopDeliverySettingService.clear()
  │
  ▼
 Удаление Redis-кэша
@@ -3218,7 +7679,7 @@ GET /api/shops/{shop_id}/delivery-settings/
 При открытии настроек магазина:
 
 1. Определяется магазин текущего пользователя.
-2. Получаются выбранные тарифы магазина через `ShopDeliverySettingService.get_shop_tariffs()`.
+2. Получаются выбранные тарифы магазина через `CDEKShopDeliverySettingService.get_shop_tariffs()`.
 3. Связанные объекты тарифов загружаются с использованием `select_related("tariff")`.
 4. Результат сериализуется и возвращается клиенту.
 
@@ -3228,13 +7689,13 @@ GET /api/shops/{shop_id}/delivery-settings/
 GET
  │
  ▼
-ShopDeliverySettingViewSet
+CDEKShopDeliverySettingViewSet
  │
  ▼
-ShopDeliverySettingService.get_shop_tariffs()
+CDEKShopDeliverySettingService.get_shop_tariffs()
  │
  ▼
-ShopDeliverySetting
+CDEKShopDeliverySetting
         │
         └── select_related("tariff")
                      │
@@ -3269,17 +7730,17 @@ POST /api/shops/{shop_id}/delivery-settings/
 Seller ЛК
       │
       ▼
-ShopDeliverySettingViewSet
+CDEKShopDeliverySettingViewSet
       │
       ▼
-ShopDeliverySettingSerializer
+CDEKShopDeliverySettingSerializer
       │
       ▼
-ShopDeliverySettingService.save()
+CDEKShopDeliverySettingService.save()
       │
       ├── Redis (проверка актуальности тарифов)
       ├── CDEKTariff
-      └── ShopDeliverySetting
+      └── CDEKShopDeliverySetting
 ```
 
 После успешного сохранения возвращается:
@@ -3298,8 +7759,8 @@ DELETE /api/shops/{shop_id}/delivery-settings/
 При удалении настроек:
 
 1. Определяется магазин текущего пользователя.
-2. Вызывается метод `ShopDeliverySettingService.clear()`.
-3. Удаляются все записи `ShopDeliverySetting`, связанные с данным магазином.
+2. Вызывается метод `CDEKShopDeliverySettingService.clear()`.
+3. Удаляются все записи `CDEKShopDeliverySetting`, связанные с данным магазином.
 
 Схема работы:
 
@@ -3307,13 +7768,13 @@ DELETE /api/shops/{shop_id}/delivery-settings/
 DELETE
    │
    ▼
-ShopDeliverySettingViewSet
+CDEKShopDeliverySettingViewSet
    │
    ▼
-ShopDeliverySettingService.clear()
+CDEKShopDeliverySettingService.clear()
    │
    ▼
-DELETE FROM ShopDeliverySetting
+DELETE FROM CDEKShopDeliverySetting
 WHERE shop_id = ...
 ```
 
@@ -3507,3 +7968,4 @@ CDEK UUID
           |
 Передача заказа продавцу
 ```
+

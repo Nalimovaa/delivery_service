@@ -14,6 +14,7 @@ class OrderDeliveryAdmin(admin.ModelAdmin):
         "order",
         "shop",
         "delivery_type",
+        "status",
         "created_at",
     )
 

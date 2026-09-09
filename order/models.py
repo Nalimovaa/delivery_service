@@ -2,6 +2,7 @@ from django.db import models
 from django.contrib.auth import get_user_model
 
 from delivery.models import OrderDelivery
+from order.enams import OrderStatus
 from product.models import Product, UniqueProduct
 
 User = get_user_model()
@@ -11,6 +12,10 @@ class Order(models.Model):
 
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="orders") # Покупатель
     created_at = models.DateTimeField(auto_now_add=True)
+    status = models.PositiveSmallIntegerField(
+        choices=OrderStatus.choices,
+        default=OrderStatus.PROCESSING,
+    )
 
     def __str__(self):
         return (

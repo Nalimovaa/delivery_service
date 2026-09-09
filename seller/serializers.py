@@ -20,7 +20,7 @@ class ShopSerializer(serializers.ModelSerializer):
             "location_from_country",
             "address",
             "postal_code",
-            "phone",
+            "phone_number",
             "carrier",
         ]
         read_only_fields = ["owner"]

@@ -2,6 +2,7 @@ from django.db import models
 
 from delivery.enums import DeliveryType, StockReservationStatus
 from delivery.managers import CDEKTariffManager, CDEKCityManager, CDEKDeliveryPointManager
+from order.enams import OrderDeliveryStatus
 
 
 class OrderDelivery(models.Model):
@@ -22,6 +23,11 @@ class OrderDelivery(models.Model):
     # Тип доставки, используемый для данной отправки.
     delivery_type = models.PositiveSmallIntegerField(
         choices=DeliveryType.choices,
+    )
+
+    status = models.PositiveSmallIntegerField(
+        choices=OrderDeliveryStatus.choices,
+        default=OrderDeliveryStatus.PROCESSING,
     )
 
     created_at = models.DateTimeField(auto_now_add=True)

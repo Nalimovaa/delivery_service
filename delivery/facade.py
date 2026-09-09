@@ -462,6 +462,8 @@ class DeliveryFacade:
                 delivery_data=shop_delivery_data
             )
 
+        return order
+
     def get_status(self, delivery_id):
         """
         Получение текущего статуса доставки.
