@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from delivery.views import CDEKTariffViewSet, DeliveryPreCalculationViewSet, DeliveryCalculationViewSet, \
-    DeliveryPointsViewSet
+    DeliveryPointsViewSet, CdekWebhookOrderStatusView
 
 router = DefaultRouter()
 
@@ -32,4 +32,9 @@ router.register(
 
 urlpatterns = [
     path('', include(router.urls)),
+    path(
+            "delivery/webhooks/cdek/order-status/",
+            CdekWebhookOrderStatusView.as_view(),
+            name="cdek-webhook-order-status",
+        ),
 ]
