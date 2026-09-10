@@ -14,13 +14,18 @@ from delivery.client import CDEKClient
 from delivery.enums import CDEKDeliveryMode
 from delivery.exceptions import CDEKBusinessError
 from delivery.routes.routes_cdek import CALCULATOR_ALL_TARIFFS, CALCULATOR_TARIFF_LIST, CALCULATOR_TARIFF, \
-    CITIES_SUGGEST, CDEK_CITIES, DELIVERY_POINTS, CDEK_POSTALCODES, CDEK_ORDER_UUID, CDEK_ORDERS
+    CITIES_SUGGEST, CDEK_CITIES, DELIVERY_POINTS, CDEK_POSTALCODES, CDEK_ORDER_UUID, CDEK_ORDERS, CDEK_WEBHOOKS, \
+    CDEK_WEBHOOK_UUID
 from delivery.schemas.locations import CDEKCitiesSchema, CDEKCitiesErrorResponseSchema, \
     CDEKDeliveryPointsErrorResponseSchema, CDEKDeliveryPointSchema, CDEKPostalCodesResponseSchema, \
     CDEKPostalCodesErrorResponseSchema
 from delivery.schemas.order import CDEKOrderResponseSchema, CDEKOrderCreateResponseSchema
 from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema, CDEKCitySchema, \
     CDEKCityErrorResponseSchema, TariffCalculationResponseSchema
+from delivery.schemas.weebhooks import WebhookSchema, WebhookDeleteResponseSchema, WebhookSubscriptionResponseSchema, \
+    WebhookSubscriptionRequestSchema
+from uuid import UUID
+from pydantic import TypeAdapter
 
 
 class CDEKAdapter(DeliveryAdapter):
@@ -1049,6 +1054,61 @@ class CDEKAdapter(DeliveryAdapter):
 
         return CDEKOrderResponseSchema.model_validate(
             response,
+        )
+
+    def subscribe_to_order_status_webhook(
+            self,
+            url: str,
+    ) -> WebhookSubscriptionResponseSchema:
+        data = WebhookSubscriptionRequestSchema(
+            type="ORDER_STATUS",
+            url=url,
+        ).model_dump()
+
+        response = self.client.post(
+            CDEK_WEBHOOKS,
+            json=data,
+        )
+
+        schema = WebhookSubscriptionResponseSchema.model_validate(
+            response
+        )
+
+        return schema
+
+    def get_all_webhooks(
+            self,
+    ) -> list[WebhookSchema]:
+        response = self.client.get(
+            CDEK_WEBHOOKS,
+        )
+
+        return TypeAdapter(
+            list[WebhookSchema]
+        ).validate_python(response)
+
+    def get_webhook(
+            self,
+            uuid: str | UUID,
+    ) -> WebhookSubscriptionResponseSchema:
+        response = self.client.get(
+            CDEK_WEBHOOK_UUID.format(uuid=uuid),
+        )
+
+        return WebhookSubscriptionResponseSchema.model_validate(
+            response
+        )
+
+    def delete_webhook(
+            self,
+            uuid: str | UUID,
+    ) -> WebhookDeleteResponseSchema:
+        response = self.client.delete(
+            CDEK_WEBHOOK_UUID.format(uuid=uuid),
+        )
+
+        return WebhookDeleteResponseSchema.model_validate(
+            response
         )
 
     def cancel_delivery(self, delivery_id):

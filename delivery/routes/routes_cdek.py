@@ -30,3 +30,6 @@ ORDER_CLIENT_RETURN = "/orders/{uuid}/clientReturn"
 ORDER_REFUSAL = "/orders/{uuid}/refusal"
 
 CDEK_CITIES = "/location/cities"
+
+CDEK_WEBHOOKS = "/webhooks"
+CDEK_WEBHOOK_UUID = "/webhooks/{uuid}"

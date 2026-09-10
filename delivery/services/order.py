@@ -575,6 +575,32 @@ class CdekOrderStatusService:
             update_fields=["order_status"]
         )
 
+    def save_webhook_status(
+            self,
+            *,
+            cdek_delivery,
+            status_code: str,
+            status_date,
+            status_name: str = "",
+            city: str | None = None,
+    ) -> None:
+        # Сохраняет статус из вебхука в логи статуса CdekDeliveryStatusHistory и в CdekDelivery
+        CdekDeliveryStatusHistory.objects.get_or_create(
+            cdek_delivery=cdek_delivery,
+            status_code=status_code,
+            status_date=status_date,
+            defaults={
+                "status_name": status_name,
+                "city": city,
+                "is_deleted": False,
+            },
+        )
+
+        cdek_delivery.order_status = status_code
+        cdek_delivery.save(
+            update_fields=["order_status"]
+        )
+
 
 class CdekRequestLogService:
 
@@ -908,3 +934,64 @@ class CdekStatusService:
         ]
 
         return StockReservationStatus.RELEASED, errors
+
+
+class CdekWebhookService:
+
+    def __init__(self):
+        self.order_status_service = OrderStatusService()
+        self.status_service = CdekOrderStatusService()
+
+    def process_order_status(
+        self,
+        *,
+        cdek_uuid: str,
+        cdek_number: int,
+        status_code: str,
+        status_date_time,
+        status_name: str = "",
+        city: str | None = None,
+    ) -> None:
+        # Проверка успешной регистрации доставки в системе СДЕК
+        cdek_delivery = (
+            CdekDelivery.objects
+            .select_related("order_delivery")
+            .filter(
+                cdek_uuid=cdek_uuid,
+                shipment_track_id=cdek_number,
+            )
+            .first()
+        )
+
+        if cdek_delivery is None:
+            raise ValidationError("CDEK delivery with specified UUID and cdek_number not found.")
+
+        if cdek_delivery.stock_status != StockReservationStatus.CONFIRMED:
+            return
+
+        self.status_service.save_webhook_status(
+            cdek_delivery=cdek_delivery,
+            status_code=status_code,
+            status_date=status_date_time,
+            status_name=status_name,
+            city=city,
+        )
+
+        # Присваиваем новый статус OrderDelivery на основе статуса CDEK
+        status = CdekDeliveryStatusMapper.map(
+            status_code=status_code,
+            status_name=status_name,
+        )
+
+        order_delivery = cdek_delivery.order_delivery
+
+        if order_delivery.status != status:
+            order_delivery.status = status
+            order_delivery.save(
+                update_fields=["status"]
+            )
+
+        # Присваиваем новый статус Order на основе статуса OrderDelivery
+        self.order_status_service.update_order_status(
+            order=order_delivery.order,
+        )

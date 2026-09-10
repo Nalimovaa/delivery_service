@@ -257,3 +257,32 @@ class CDEKDeliveryPointSerializer(serializers.Serializer):
     )
 
     city_uuid = serializers.UUIDField()
+
+
+# Сериалайзеры для вебхуков
+
+class CdekWebhookOrderStatusAttributesSerializer(
+    serializers.Serializer
+):
+    cdek_number = serializers.IntegerField()
+    code = serializers.CharField()
+    status_date_time = serializers.DateTimeField()
+    name = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+    )
+    city = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        default=None,
+    )
+
+
+class APIWebhookOrderStatusSerializer(
+    serializers.Serializer
+):
+    uuid = serializers.UUIDField()
+
+    attributes = CdekWebhookOrderStatusAttributesSerializer()

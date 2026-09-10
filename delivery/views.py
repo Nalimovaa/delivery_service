@@ -1,14 +1,19 @@
 from rest_framework import viewsets
 from rest_framework.response import Response
-
 from delivery.facade import DeliveryFacade
-from delivery.schemas.tariffs import ShopDeliveryResultDTO
+from django.conf import settings
 from delivery.serializers import CDEKTariffSerializer, ShopDeliveryResultSerializer, CalculateDeliveryRequestSerializer, \
-    CartDeliveryResultSerializer, CDEKDeliveryPointSerializer
+    CartDeliveryResultSerializer, CDEKDeliveryPointSerializer, APIWebhookOrderStatusSerializer
 from delivery.services.locations import CDEKDeliveryPointService
+from delivery.services.order import CdekWebhookService
 from delivery.services.tariffs import CDEKTariffService
 from drf_spectacular.utils import extend_schema, OpenApiExample
 from users.permissions import IsCustomAuthenticated, RolePermission
+from rest_framework import status
+from rest_framework.permissions import AllowAny
+from rest_framework.request import Request
+from rest_framework.views import APIView
+from rest_framework.exceptions import PermissionDenied
 
 
 class CDEKTariffViewSet(viewsets.ViewSet):
@@ -291,3 +296,79 @@ class DeliveryPointsViewSet(viewsets.ViewSet):
         )
 
         return Response(delivery_points)
+
+
+
+
+class CdekWebhookOrderStatusView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    ALLOWED_IPS = settings.ALLOWED_IPS_CDEK_WEBHOOKS
+
+    @extend_schema(
+        summary="Получить webhook CDEK об изменении статуса заказа",
+        description=(
+            "Принимает уведомление от CDEK об изменении статуса заказа."
+        ),
+        request=APIWebhookOrderStatusSerializer,
+        responses={
+            200: None,
+
+            400: OpenApiExample(
+                "Bad Request",
+                value={
+                    "detail": "Invalid webhook data.",
+                },
+            ),
+
+            403: OpenApiExample(
+                "Forbidden",
+                value={
+                    "detail": "IP address is not allowed.",
+                },
+            ),
+
+            404: OpenApiExample(
+                "Not Found",
+                value={
+                    "detail": "CDEK delivery not found.",
+                },
+            ),
+        },
+    )
+    def post(self, request: Request):
+        client_ip = self.get_client_ip(request)
+        self.validate_ip(client_ip)
+
+        serializer = APIWebhookOrderStatusSerializer(
+            data=request.data,
+        )
+        serializer.is_valid(
+            raise_exception=True,
+        )
+
+        data = serializer.validated_data
+        attributes = data["attributes"]
+
+        CdekWebhookService().process_order_status(
+            cdek_uuid=str(data["uuid"]),
+            cdek_number=attributes["cdek_number"],
+            status_code=attributes["code"],
+            status_date_time=attributes["status_date_time"],
+            status_name=attributes.get("name", ""),
+            city=attributes.get("city"),
+        )
+
+        return Response(
+            status=status.HTTP_200_OK,
+        )
+
+    def get_client_ip(self, request: Request) -> str:
+        return request.META.get("REMOTE_ADDR", "")
+
+    def validate_ip(self, client_ip: str) -> None:
+        if client_ip not in self.ALLOWED_IPS:
+            raise PermissionDenied(
+                "IP address is not allowed.",
+            )

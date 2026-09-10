@@ -233,3 +233,13 @@ CACHES = {
     }
 }
 
+# CDEK WEBHOOKS
+ALLOWED_IPS_CDEK_WEBHOOKS = [
+    ip.strip()
+    for ip in os.environ.get(
+        "ALLOWED_IPS_CDEK_WEBHOOKS",
+        ""
+    ).split(",")
+    if ip.strip()
+]
+
