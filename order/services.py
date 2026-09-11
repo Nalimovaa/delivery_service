@@ -30,6 +30,12 @@ class OrderStatusService:
             new_status = OrderStatus.PROCESSING
 
         elif all(
+                status == OrderDeliveryStatus.CANCELLED
+                for status in statuses
+        ):
+            new_status = OrderStatus.CANCELLED
+
+        elif all(
             status == OrderDeliveryStatus.DELIVERED
             for status in statuses
         ):

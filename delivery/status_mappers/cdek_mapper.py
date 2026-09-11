@@ -8,6 +8,8 @@ class CdekDeliveryStatusMapper(BaseDeliveryStatusMapper):
     """
 
     STATUS_MAP = {
+        "CREATED": OrderDeliveryStatus.PROCESSING,
+
         "1": OrderDeliveryStatus.CONFIRMED,
         "2": OrderDeliveryStatus.CANCELLED,
         "3": OrderDeliveryStatus.IN_TRANSIT,
@@ -72,3 +74,7 @@ class CdekDeliveryStatusMapper(BaseDeliveryStatusMapper):
                 f"Неизвестный статус CDEK: "
                 f"code={status_code}, name={status_name}"
             )
+
+    @staticmethod
+    def map_cancelled() -> OrderDeliveryStatus:
+        return OrderDeliveryStatus.CANCELLED

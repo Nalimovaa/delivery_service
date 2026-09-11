@@ -285,16 +285,17 @@ class DeliveryFacade:
 
         {
             "selected_tariffs": {
-                "1": 137,
-                "4": 121
+                "1": 139,
+                "4": 137
             },
             "delivery_data": {
                 "1": {
-                    "address_to": "ул. Стара Загора, д. 130",
-                    "postal_code_to": "443114"
+                    "address_to": "ул. Кооперативная, д. 102А",
+                    "postal_code_to": "446370"
                 },
                 "4": {
-                    "delivery_point": "SAM12"
+                    "address_to": "ул. Кооперативная, д. 102А",
+                    "postal_code_to": "446370"
                 }
             }
         }

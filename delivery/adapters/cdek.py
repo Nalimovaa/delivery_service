@@ -12,14 +12,14 @@ from decimal import Decimal
 from delivery.adapters.base import DeliveryAdapter
 from delivery.client import CDEKClient
 from delivery.enums import CDEKDeliveryMode
-from delivery.exceptions import CDEKBusinessError
+from delivery.exceptions import CDEKBusinessError, CDEKApiError
 from delivery.routes.routes_cdek import CALCULATOR_ALL_TARIFFS, CALCULATOR_TARIFF_LIST, CALCULATOR_TARIFF, \
     CITIES_SUGGEST, CDEK_CITIES, DELIVERY_POINTS, CDEK_POSTALCODES, CDEK_ORDER_UUID, CDEK_ORDERS, CDEK_WEBHOOKS, \
     CDEK_WEBHOOK_UUID
 from delivery.schemas.locations import CDEKCitiesSchema, CDEKCitiesErrorResponseSchema, \
     CDEKDeliveryPointsErrorResponseSchema, CDEKDeliveryPointSchema, CDEKPostalCodesResponseSchema, \
     CDEKPostalCodesErrorResponseSchema
-from delivery.schemas.order import CDEKOrderResponseSchema, CDEKOrderCreateResponseSchema
+from delivery.schemas.order import CDEKOrderResponseSchema, CDEKOrderCreateResponseSchema, CdekDeleteOrderResponseSchema
 from delivery.schemas.tariffs import AvailableTariffsResponseSchema, TariffListResponseSchema, CDEKCitySchema, \
     CDEKCityErrorResponseSchema, TariffCalculationResponseSchema
 from delivery.schemas.weebhooks import WebhookSchema, WebhookDeleteResponseSchema, WebhookSubscriptionResponseSchema, \
@@ -1111,6 +1111,78 @@ class CDEKAdapter(DeliveryAdapter):
             response
         )
 
-    def cancel_delivery(self, delivery_id):
-        raise NotImplementedError
+    def is_order_deleted(
+            self,
+            cdek_uuid: str | UUID,
+    ) -> bool:
+
+        """Проверка, удален ли заказ в системе CDEK по UUID."""
+        try:
+            self.get_order_uuid(
+                uuid=cdek_uuid,
+            )
+        except CDEKApiError as exc:
+            if (
+                    exc.status_code == 400
+                    and exc.response_data
+            ):
+                errors = exc.response_data.get(
+                    "requests",
+                    [{}],
+                )[0].get("errors", [])
+
+                if any(
+                        error.get("code") == "v2_entity_not_found"
+                        for error in errors
+                ):
+                    return True
+
+            raise
+
+        return False
+
+    def cancel_delivery(
+            self,
+            cdek_uuid: str | UUID,
+    ) -> CdekDeleteOrderResponseSchema:
+        """
+        Удаление ранее созданного заказа из системы CDEK.
+
+        Заказ может быть удален только до начала движения
+        груза на складе CDEK.
+        """
+
+        response = self.client.delete(
+            CDEK_ORDER_UUID.format(uuid=cdek_uuid)
+        )
+
+        schema = CdekDeleteOrderResponseSchema.model_validate(
+            response
+        )
+
+        # CDEK может вернуть HTTP 202,
+        # но сам запрос к сущности может иметь INVALID.
+        for request in schema.requests:
+            if request.state == "INVALID":
+                messages = [
+                    error.message
+                    for error in request.errors
+                    if error.message
+                ]
+
+                raise CDEKBusinessError(
+                    operation="cancel_delivery",
+                    code=(
+                        request.errors[0].code
+                        if request.errors
+                        else None
+                    ),
+                    message=(
+                        "; ".join(messages)
+                        or "CDEK order deletion failed."
+                    ),
+                    response_data=response,
+                )
+
+        return schema
 

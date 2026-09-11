@@ -19,3 +19,9 @@ class CDEKOrderFailedEvent(BaseModel):
     cdek_delivery_id: int
     cdek_uuid: str
     errors: list[dict] = Field(default_factory=list)
+
+
+class CDEKOrderDeleteAcceptedEvent(BaseModel):
+    event: str = "cdek.order.delete.accepted"
+    cdek_delivery_id: int
+    cdek_uuid: str

@@ -1,5 +1,9 @@
+from datetime import date as date_type
 from pydantic import BaseModel, Field
 from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
 
 
 # Pydantic-схема для ответа от CDEKAdapter.get_order_uuid()
@@ -122,4 +126,78 @@ class CDEKOrderCreateResponseSchema(BaseModel):
     )
     related_entities: list[dict] = Field(
         default_factory=list,
+    )
+
+
+# Pydantic-схема для ответа от CDEKAdapter.cancel_delivery()
+
+class CdekOrderErrorSchema(BaseModel):
+    code: str | None = None
+    additional_code: str | None = None
+    message: str | None = None
+
+
+class CdekOrderWarningSchema(BaseModel):
+    code: str | None = None
+    message: str | None = None
+
+
+class CdekOrderRequestSchema(BaseModel):
+    request_uuid: UUID | None = None
+    type: Literal[
+        "CREATE",
+        "UPDATE",
+        "DELETE",
+        "AUTH",
+        "GET",
+        "CREATE_CLIENT_RETURN",
+    ] | None = None
+    date_time: datetime | None = None
+    state: Literal[
+        "ACCEPTED",
+        "WAITING",
+        "SUCCESSFUL",
+        "INVALID",
+    ] | None = None
+    errors: list[CdekOrderErrorSchema] = Field(
+        default_factory=list
+    )
+    warnings: list[CdekOrderWarningSchema] = Field(
+        default_factory=list
+    )
+
+
+class CdekOrderEntitySchema(BaseModel):
+    uuid: UUID | None = None
+
+
+class CdekRelatedEntitySchema(BaseModel):
+    uuid: UUID | None = None
+
+    type: Literal[
+        "return_order",
+        "direct_order",
+        "client_return_order",
+        "client_direct_order",
+        "waybill",
+        "barcode",
+        "reverse_order",
+        "delivery",
+    ]
+
+    url: str | None = None
+    create_time: datetime | None = None
+    cdek_number: str | None = None
+    date: date_type | None = None
+    time_from: str | None = None
+    time_to: str | None = None
+
+
+class CdekDeleteOrderResponseSchema(BaseModel):
+    entity: CdekOrderEntitySchema
+    requests: list[CdekOrderRequestSchema] = Field(
+        default_factory=list
+    )
+    related_entities: list[CdekRelatedEntitySchema] = Field(
+        default_factory=list
     )

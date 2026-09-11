@@ -1,7 +1,7 @@
 from delivery.adapters.cdek import CDEKAdapter
 from delivery.enums import StockReservationStatus
 from delivery.models import CdekDelivery, CdekDeliveryStatusHistory, CdekRequestLog, OrderDelivery
-from delivery.schemas.order import CDEKOrderResponseSchema, CDEKOrderCreateResponseSchema
+from delivery.schemas.order import CDEKOrderResponseSchema, CDEKOrderCreateResponseSchema, CdekDeleteOrderResponseSchema
 from django.db import transaction
 from decimal import Decimal
 from delivery.status_mappers.cdek_mapper import CdekDeliveryStatusMapper
@@ -12,12 +12,14 @@ from product.services import CartService, StockService
 from delivery.enums import CDEKDeliveryMode
 from delivery.exceptions import CDEKBusinessError
 from delivery.kafka.producers import KafkaProducer
-from delivery.kafka.schemas import CDEKOrderAcceptedEvent
+from delivery.kafka.schemas import CDEKOrderAcceptedEvent, CDEKOrderDeleteAcceptedEvent
 from delivery.kafka.topics import KafkaTopic
 from delivery.schemas.tariffs import ShopCalculateDeliveryResultDTO
 from delivery.services.locations import CDEKLocationValidationService, CDEKDeliveryPointService, CDEKCityService
 from rest_framework.exceptions import ValidationError
 import uuid
+from uuid import UUID
+from django.utils import timezone
 
 
 
@@ -80,6 +82,8 @@ class CDEKOrderService:
 
         self.request_log_service = CdekRequestLogService()
         self.status_service = CdekOrderStatusService()
+        self.cdek_status_service = CdekStatusService()
+
 
         self.kafka_producer = KafkaProducer()
 
@@ -539,6 +543,49 @@ class CDEKOrderService:
 
         return cdek_delivery
 
+    def cancel_delivery(
+            self,
+            cdek_uuid: str | UUID,
+    ) -> CdekDeleteOrderResponseSchema:
+        """Удаление ранее созданного заказа из системы CDEK.
+        Заказ может быть удален только до начала движения
+        груза на складе CDEK.
+        """
+
+        cdek_delivery = (
+            CdekDelivery.objects
+            .select_related("order_delivery")
+            .filter(cdek_uuid=cdek_uuid)
+            .first()
+        )
+
+        if cdek_delivery is None:
+            raise ValidationError(
+                f"CDEK delivery with UUID "
+                f"'{cdek_uuid}' not found."
+            )
+
+        response = self.adapter.cancel_delivery(
+            cdek_uuid=cdek_delivery.cdek_uuid,
+        )
+
+        self.request_log_service.save_delete_order_response(
+            cdek_delivery=cdek_delivery,
+            response=response,
+        )
+
+        event = CDEKOrderDeleteAcceptedEvent(
+            cdek_delivery_id=cdek_delivery.id,
+            cdek_uuid=str(cdek_delivery.cdek_uuid),
+        )
+
+        self.kafka_producer.send(
+            topic=KafkaTopic.CDEK_ORDER_DELETE_ACCEPTED,
+            message=event.model_dump(),
+        )
+
+        return response
+
 
 class CdekOrderStatusService:
 
@@ -569,6 +616,11 @@ class CdekOrderStatusService:
             statuses,
             key=lambda status: status.date_time,
         )
+
+        # Отменённый заказ больше не должен
+        # перезаписываться последним статусом CDEK.
+        if cdek_delivery.order_status == "CANCELLED":
+            return
 
         cdek_delivery.order_status = latest_status.code
         cdek_delivery.save(
@@ -671,6 +723,23 @@ class CdekRequestLogService:
                 response_data=response.model_dump(mode="json"),
             )
 
+    def save_delete_order_response(
+            self,
+            *,
+            cdek_delivery: CdekDelivery,
+            response: CdekDeleteOrderResponseSchema,
+    ):
+        for request in response.requests:
+            self._save_request(
+                cdek_delivery=cdek_delivery,
+                cdek_uuid=response.entity.uuid,
+                request_type=request.type,
+                state=request.state,
+                date_time=request.date_time,
+                errors=request.errors,
+                response_data=response.model_dump(mode="json"),
+            )
+
 
 class CdekStatusService:
 
@@ -698,6 +767,79 @@ class CdekStatusService:
         return CdekDeliveryStatusMapper.map(
             status_code=latest_status.code,
             status_name=latest_status.name,
+        )
+
+    @transaction.atomic
+    def mark_delivery_cancelled(
+            self,
+            *,
+            cdek_delivery: CdekDelivery,
+    ) -> None:
+        """
+        Переводит CDEK-доставку в отменённое состояние,
+        возвращает товар на склад и записывает историю.
+        """
+
+        cdek_delivery = (
+            CdekDelivery.objects
+            .select_for_update()
+            .select_related(
+                "order_delivery",
+                "order_delivery__order",
+            )
+            .get(id=cdek_delivery.id)
+        )
+
+        order_delivery = cdek_delivery.order_delivery
+
+        # Если уже обработали отмену — повторно ничего не делаем.
+        if (
+                order_delivery.status
+                == OrderDeliveryStatus.CANCELLED
+                and cdek_delivery.stock_status
+                == StockReservationStatus.RELEASED
+        ):
+            return
+
+        # 1. Статусы доставки
+        status = CdekDeliveryStatusMapper.map_cancelled()
+
+        if order_delivery.status != status:
+            order_delivery.status = status
+            order_delivery.save(
+                update_fields=["status"],
+            )
+
+        if cdek_delivery.order_status != "CANCELLED":
+            cdek_delivery.order_status = "CANCELLED"
+            cdek_delivery.save(
+                update_fields=["order_status"],
+            )
+
+        # 2. Возврат товара
+        self.restore_stock_after_cancellation(
+            cdek_delivery=cdek_delivery,
+        )
+
+        # 3. История
+        already_cancelled = CdekDeliveryStatusHistory.objects.filter(
+            cdek_delivery=cdek_delivery,
+            status_code="CANCELLED",
+            is_deleted=True,
+        ).exists()
+
+        if not already_cancelled:
+            CdekDeliveryStatusHistory.objects.create(
+                cdek_delivery=cdek_delivery,
+                status_code="CANCELLED",
+                status_name="Заказ CDEK отменён",
+                status_date=timezone.now(),
+                is_deleted=True,
+            )
+
+        # 4. Агрегированный Order
+        self.order_status_service.update_order_status(
+            order=order_delivery.order,
         )
 
     def check_order(
@@ -934,6 +1076,95 @@ class CdekStatusService:
         ]
 
         return StockReservationStatus.RELEASED, errors
+
+    @transaction.atomic
+    def restore_stock_after_cancellation(
+            self,
+            *,
+            cdek_delivery: CdekDelivery,
+    ) -> bool:
+
+        if (
+                cdek_delivery.stock_status
+                != StockReservationStatus.CONFIRMED
+        ):
+            return False
+
+        order_products = list(
+            OrderProduct.objects.filter(
+                order_delivery=cdek_delivery.order_delivery,
+            )
+        )
+
+        unique_product_ids = {
+            order_product.unique_product_id
+            for order_product in order_products
+        }
+
+        locked_products = StockService.lock_products(
+            unique_product_ids=unique_product_ids,
+        )
+
+        for order_product in order_products:
+            unique_product = locked_products.get(
+                order_product.unique_product_id,
+            )
+
+            if unique_product is None:
+                raise ValueError(
+                    "Товар "
+                    f"id={order_product.unique_product_id} "
+                    "не найден."
+                )
+
+            StockService.increase(
+                unique_product=unique_product,
+                amount=order_product.amount,
+            )
+
+        cdek_delivery.stock_status = (
+            StockReservationStatus.RELEASED
+        )
+
+        cdek_delivery.save(
+            update_fields=["stock_status"],
+        )
+
+        return True
+
+    def check_order_deletion(
+            self,
+            *,
+            cdek_delivery_id: int,
+    ) -> bool:
+        """
+        Проверяет, завершилось ли удаление заказа CDEK.
+
+        True — заказ удалён.
+        False — CDEK ещё не завершил удаление.
+        """
+
+        cdek_delivery = (
+            CdekDelivery.objects
+            .select_related(
+                "order_delivery",
+                "order_delivery__order",
+            )
+            .get(id=cdek_delivery_id)
+        )
+
+        is_deleted = self.adapter.is_order_deleted(
+            cdek_uuid=cdek_delivery.cdek_uuid,
+        )
+
+        if not is_deleted:
+            return False
+
+        self.mark_delivery_cancelled(
+            cdek_delivery=cdek_delivery,
+        )
+
+        return True
 
 
 class CdekWebhookService:

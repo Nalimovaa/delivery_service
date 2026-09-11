@@ -6,10 +6,20 @@ from delivery.kafka.schemas import CDEKOrderReadyEvent, CDEKOrderFailedEvent
 from delivery.kafka.topics import KafkaTopic
 from delivery.models import CdekDelivery
 from delivery.services.order import CdekStatusService
+from order.enams import OrderDeliveryStatus
 
 
 @shared_task
 def check_cdek_order_status(cdek_delivery_id: int):
+    cdek_delivery = (
+        CdekDelivery.objects
+        .select_related("order_delivery")
+        .get(id=cdek_delivery_id)
+    )
+
+    if cdek_delivery.order_delivery.status == OrderDeliveryStatus.CANCELLED:
+        return
+
     service = CdekStatusService()
 
     result, errors = service.process(
@@ -58,3 +68,20 @@ def check_cdek_order_status(cdek_delivery_id: int):
         )
 
         return
+
+
+@shared_task
+def check_cdek_order_deletion(
+    cdek_delivery_id: int,
+):
+    service = CdekStatusService()
+
+    result = service.check_order_deletion(
+        cdek_delivery_id=cdek_delivery_id,
+    )
+
+    if result is False:
+        check_cdek_order_deletion.apply_async(
+            args=[cdek_delivery_id],
+            countdown=30,
+        )

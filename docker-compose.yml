@@ -55,6 +55,7 @@ services:
         kafka-topics.sh --bootstrap-server kafka1:9092 --create --if-not-exists --topic cdek.order.accepted --partitions 1 --replication-factor 1;
         kafka-topics.sh --bootstrap-server kafka1:9092 --create --if-not-exists --topic cdek.order.ready --partitions 1 --replication-factor 1;
         kafka-topics.sh --bootstrap-server kafka1:9092 --create --if-not-exists --topic cdek.order.failed --partitions 1 --replication-factor 1;
+        kafka-topics.sh --bootstrap-server kafka1:9092 --create --if-not-exists --topic cdek.order.delete.accepted --partitions 1 --replication-factor 1;
         echo "Kafka topics initialized";
       '
 

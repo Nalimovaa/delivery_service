@@ -36,14 +36,14 @@ class DeliveryAdapter(ABC):
         pass
 
     @abstractmethod
-    def get_status(self, delivery_id):
+    def get_status(self, **kwargs):
         """
         Получение статуса доставки.
         """
         pass
 
     @abstractmethod
-    def cancel_delivery(self, delivery_id):
+    def cancel_delivery(self, **kwargs):
         """
         Отмена доставки.
         """

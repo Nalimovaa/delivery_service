@@ -6,7 +6,7 @@ import json
 from django.conf import settings
 
 from delivery.kafka.topics import KafkaTopic
-from delivery.tasks.order import check_cdek_order_status
+from delivery.tasks.order import check_cdek_order_status, check_cdek_order_deletion
 
 
 class KafkaConsumer:
@@ -22,6 +22,7 @@ class KafkaConsumer:
 
         self.consumer.subscribe([
             KafkaTopic.CDEK_ORDER_ACCEPTED,
+            KafkaTopic.CDEK_ORDER_DELETE_ACCEPTED,
         ])
 
     def run(self):
@@ -33,8 +34,6 @@ class KafkaConsumer:
             if message is None:
                 continue
 
-            print("MESSAGE RECEIVED")
-
             if message.error():
                 print("KAFKA ERROR:", message.error())
                 continue
@@ -42,12 +41,24 @@ class KafkaConsumer:
             data = json.loads(
                 message.value().decode("utf-8")
             )
+
             print("DATA:", data)
 
-            check_cdek_order_status.apply_async(
-                args=[
-                    data["cdek_delivery_id"],
-                ],
-                countdown=30,
-            )
-            print("CELERY TASK SENT")
+            if message.topic() == KafkaTopic.CDEK_ORDER_ACCEPTED:
+                check_cdek_order_status.apply_async(
+                    args=[
+                        data["cdek_delivery_id"],
+                    ],
+                    countdown=30,
+                )
+
+            elif (
+                    message.topic()
+                    == KafkaTopic.CDEK_ORDER_DELETE_ACCEPTED
+            ):
+                check_cdek_order_deletion.apply_async(
+                    args=[
+                        data["cdek_delivery_id"],
+                    ],
+                    countdown=30,
+                )
