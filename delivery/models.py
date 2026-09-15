@@ -675,6 +675,10 @@ class CdekDeliveryStatusHistory(models.Model):
 
 
 class CdekRequestLog(models.Model):
+    """
+        Техническая информация о клиентском возврате
+        в системе CDEK.
+    """
     cdek_delivery = models.ForeignKey(
         CdekDelivery,
         on_delete=models.CASCADE,
@@ -718,4 +722,57 @@ class CdekRequestLog(models.Model):
 
     created_at = models.DateTimeField(
         auto_now_add=True,
+    )
+
+class CdekReturn(models.Model):
+    return_request = models.OneToOneField(
+        "order.ReturnRequest",
+        on_delete=models.PROTECT,
+        related_name="cdek_return",
+        verbose_name="Заявка на возврат",
+    )
+
+    cdek_delivery = models.ForeignKey(
+        CdekDelivery,
+        on_delete=models.PROTECT,
+        related_name="returns",
+        verbose_name="Исходная доставка CDEK",
+    )
+
+    cdek_uuid = models.UUIDField(
+        unique=True,
+        verbose_name="UUID возврата CDEK",
+    )
+
+    tariff_code = models.PositiveIntegerField(
+        verbose_name="Тариф CDEK",
+    )
+
+    request_state = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True,
+        verbose_name="Состояние запроса CDEK",
+    )
+
+    cdek_status_code = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True,
+        verbose_name="Код статуса CDEK",
+    )
+
+    cdek_status_name = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        verbose_name="Статус CDEK",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
     )

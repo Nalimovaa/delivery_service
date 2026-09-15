@@ -1,5 +1,7 @@
-from order.enams import OrderStatus, OrderDeliveryStatus
-from order.models import Order
+from delivery.models import OrderDelivery
+from order.enams import OrderStatus, OrderDeliveryStatus, ReturnRequestStatus
+from order.models import Order, ReturnRequest
+from rest_framework.exceptions import ValidationError
 
 
 class OrderStatusService:
@@ -73,3 +75,35 @@ class OrderStatusService:
             order.save(update_fields=["status"])
 
         return new_status
+
+
+class ReturnRequestService:
+    """
+    Сервис для создания запроса покупателя
+    на возврат заказа магазину.
+    """
+
+    @staticmethod
+    def create(
+        *,
+        user,
+        order_delivery: OrderDelivery,
+        reason: str,
+    ) -> ReturnRequest:
+
+        if order_delivery.order.owner_id != user.id:
+            raise ValidationError(
+                "Вы не можете оформить возврат этого заказа."
+            )
+
+        if order_delivery.status != OrderDeliveryStatus.DELIVERED:
+            raise ValidationError(
+                "Возврат можно оформить только для доставленного заказа."
+            )
+
+        return ReturnRequest.objects.create(
+            order_delivery=order_delivery,
+            owner=user,
+            status=ReturnRequestStatus.REQUESTED,
+            reason=reason,
+        )

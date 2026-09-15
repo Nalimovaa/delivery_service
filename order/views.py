@@ -2,10 +2,21 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample
 from rest_framework.exceptions import NotFound
 from delivery.facade import DeliveryFacade
-from order.models import Order
-from order.serializers import CreateOrderRequestSerializer, CreateOrderResponseSerializer, OrderStatusSerializer
+from delivery.serializers import CDEKClientReturnCreateSerializer, CdekReturnSerializer
+from delivery.services.order import CDEKOrderService
+from order.models import Order, ReturnRequest
+from order.serializers import CreateOrderRequestSerializer, CreateOrderResponseSerializer, OrderStatusSerializer, \
+    ReturnRequestSerializer, ReturnRequestCreateSerializer
+from order.services import ReturnRequestService
 from users.permissions import IsCustomAuthenticated, RolePermission
 from rest_framework import status, viewsets
+from drf_spectacular.utils import (
+    extend_schema,
+    OpenApiExample,
+    OpenApiResponse,
+)
+from rest_framework.views import APIView
+from django.shortcuts import get_object_or_404
 
 
 
@@ -21,6 +32,24 @@ class OrderViewSet(viewsets.ViewSet):
     выполняться асинхронно. Поэтому успешный ответ endpoint
     означает принятие заказа системой, а не окончательное
     подтверждение регистрации отправления.
+
+    {
+            "selected_tariffs": {
+                "1": 139,
+                "4": 137
+            },
+            "delivery_data": {
+                "1": {
+                    "address_to": "ул. Кооперативная, д. 102А",
+                    "postal_code_to": "446370"
+                },
+                "4": {
+                    "address_to": "ул. Кооперативная, д. 102А",
+                    "postal_code_to": "446370"
+                }
+            }
+        }
+
     """
 
     permission_classes = [IsCustomAuthenticated, RolePermission]
@@ -173,3 +202,268 @@ class OrderViewSet(viewsets.ViewSet):
             status=status.HTTP_200_OK,
         )
 
+
+class ReturnRequestCreateView(APIView):
+    """
+    Создание покупателем заявки на возврат доставленного заказа.
+
+    Заявка может быть создана только для заказа,
+    принадлежащего текущему пользователю, и только после его доставки.
+    """
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "ReturnRequest"
+
+    @extend_schema(
+        summary="Создание заявки на возврат заказа",
+        description=(
+            "Создает заявку покупателя на возврат доставленного заказа.\n\n"
+
+            "Для создания заявки необходимо, чтобы:\n"
+            "1. доставка заказа существовала;\n"
+            "2. заказ принадлежал текущему пользователю;\n"
+            "3. доставка имела статус «Доставлена».\n\n"
+
+            "После успешного создания заявка получает статус "
+            "`REQUESTED` и передается магазину на рассмотрение."
+        ),
+        request=ReturnRequestCreateSerializer,
+        responses={
+            201: ReturnRequestSerializer,
+            400: OpenApiResponse(
+                description="Ошибка валидации или условия возврата не выполнены.",
+            ),
+            401: OpenApiResponse(
+                description="Пользователь не авторизован.",
+            ),
+            403: OpenApiResponse(
+                description="Недостаточно прав.",
+            ),
+        },
+    )
+    def post(self, request):
+        serializer = ReturnRequestCreateSerializer(
+            data=request.data,
+        )
+        serializer.is_valid(raise_exception=True)
+
+        service = ReturnRequestService()
+
+        return_request = service.create(
+            user=request.user,
+            order_delivery=serializer.validated_data["order_delivery"],
+            reason=serializer.validated_data["reason"],
+        )
+
+        response_serializer = ReturnRequestSerializer(
+            return_request,
+        )
+
+        return Response(
+            response_serializer.data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ReturnRequestUserListView(APIView):
+    """
+    Просмотр покупателем списка собственных заявок
+    на возврат заказов.
+    """
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "ReturnRequest"
+
+    @extend_schema(
+        summary="Список заявок покупателя на возврат",
+        description=(
+            "Возвращает список заявок на возврат, "
+            "созданных текущим пользователем."
+        ),
+        responses={
+            200: ReturnRequestSerializer(many=True),
+            401: OpenApiResponse(
+                description="Пользователь не авторизован.",
+            ),
+            403: OpenApiResponse(
+                description="Недостаточно прав.",
+            ),
+        },
+    )
+    def get(self, request):
+        return_requests = (
+            ReturnRequest.objects
+            .filter(owner=request.user)
+            .select_related(
+                "owner",
+                "order_delivery",
+                "order_delivery__shop",
+                "order_delivery__shop__owner",
+            )
+            .order_by("-created_at")
+        )
+
+        serializer = ReturnRequestSerializer(
+            return_requests,
+            many=True,
+        )
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
+
+
+
+class ReturnRequestUserDetailView(APIView):
+    """
+    Просмотр покупателем конкретной собственной заявки
+    на возврат заказа.
+    """
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "ReturnRequest"
+
+    @extend_schema(
+        summary="Просмотр заявки покупателем",
+        description=(
+            "Возвращает информацию о конкретной заявке "
+            "на возврат заказа.\n\n"
+            "Покупатель может просматривать только заявки, "
+            "созданные им самим."
+        ),
+        responses={
+            200: ReturnRequestSerializer,
+            401: OpenApiResponse(
+                description="Пользователь не авторизован.",
+            ),
+            403: OpenApiResponse(
+                description="Недостаточно прав.",
+            ),
+            404: OpenApiResponse(
+                description="Заявка не найдена.",
+            ),
+        },
+    )
+    def get(self, request, pk):
+        return_request = get_object_or_404(
+            ReturnRequest.objects.select_related(
+                "owner",
+                "order_delivery",
+                "order_delivery__shop",
+                "order_delivery__shop__owner",
+            ),
+            pk=pk,
+        )
+
+        self.check_object_permissions(
+            request,
+            return_request,
+        )
+
+        serializer = ReturnRequestSerializer(
+            return_request,
+        )
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
+
+
+
+class CDEKClientReturnCreateView(APIView):
+    """
+    Создание клиентского возврата
+    в системе CDEK для одобренной заявки.
+    """
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "ReturnRequest"
+
+    @extend_schema(
+        summary="Создание возврата в CDEK",
+        description=(
+            "Регистрирует клиентский возврат "
+            "в системе CDEK для одобренной заявки."
+        ),
+        request=CDEKClientReturnCreateSerializer,
+        responses={
+            201: CdekReturnSerializer,
+            400: OpenApiResponse(
+                description=(
+                    "Ошибка валидации или бизнес-ошибка CDEK."
+                ),
+            ),
+            401: OpenApiResponse(
+                description="Пользователь не авторизован.",
+            ),
+            403: OpenApiResponse(
+                description="Недостаточно прав.",
+            ),
+            404: OpenApiResponse(
+                description="Заявка на возврат не найдена.",
+            ),
+        },
+    )
+    def post(
+        self,
+        request,
+        pk,
+    ):
+        return_request = get_object_or_404(
+            ReturnRequest.objects.select_related(
+                "order_delivery",
+                "order_delivery__shop",
+                "order_delivery__shop__owner",
+            ),
+            pk=pk,
+        )
+
+        self.check_object_permissions(
+            request,
+            return_request,
+        )
+
+        serializer = CDEKClientReturnCreateSerializer(
+            data=request.data,
+        )
+        serializer.is_valid(
+            raise_exception=True,
+        )
+
+        service = CDEKOrderService(
+            user=request.user,
+        )
+
+        cdek_return = service.create_client_return(
+            return_request_id=return_request.id,
+            tariff_code=serializer.validated_data[
+                "tariff_code"
+            ],
+        )
+
+        response_serializer = CdekReturnSerializer(
+            cdek_return,
+        )
+
+        return Response(
+            response_serializer.data,
+            status=status.HTTP_201_CREATED,
+        )

@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from delivery.models import CdekReturn
+
 
 class CDEKTariffSerializer(serializers.Serializer):
     """ Сериализатор для получени всех тарифов по договору продавца.
@@ -286,3 +288,58 @@ class APIWebhookOrderStatusSerializer(
     uuid = serializers.UUIDField()
 
     attributes = CdekWebhookOrderStatusAttributesSerializer()
+
+
+# Удаление ранее созданного заказа из системы CDEK.
+#  Заказ может быть удален только до начала движения груза на складе CDEK.
+
+# Сериализатор запроса
+class CDEKOrderDeleteRequestSerializer(serializers.Serializer):
+    cdek_uuid = serializers.UUIDField(
+        help_text="UUID отправления CDEK.",
+    )
+
+
+#Сериализатор ответа
+class CDEKOrderDeleteResponseSerializer(serializers.Serializer):
+    cdek_uuid = serializers.UUIDField(
+        help_text="UUID отправления CDEK.",
+    )
+    status = serializers.CharField(
+        help_text="Статус обработки запроса.",
+    )
+    message = serializers.CharField(
+        help_text="Сообщение о результате принятия запроса.",
+    )
+
+
+class CDEKClientReturnCreateSerializer(serializers.Serializer):
+    """
+    Сериализатор для создания клиентского возврата в CDEK.
+    """
+
+    tariff_code = serializers.IntegerField(
+        min_value=1,
+    )
+
+
+class CdekReturnSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор клиентского возврата CDEK.
+    """
+
+    class Meta:
+        model = CdekReturn
+        fields = (
+            "id",
+            "return_request",
+            "cdek_delivery",
+            "cdek_uuid",
+            "tariff_code",
+            "request_state",
+            "cdek_status_code",
+            "cdek_status_name",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields

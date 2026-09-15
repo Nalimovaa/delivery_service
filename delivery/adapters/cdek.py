@@ -15,7 +15,7 @@ from delivery.enums import CDEKDeliveryMode
 from delivery.exceptions import CDEKBusinessError, CDEKApiError
 from delivery.routes.routes_cdek import CALCULATOR_ALL_TARIFFS, CALCULATOR_TARIFF_LIST, CALCULATOR_TARIFF, \
     CITIES_SUGGEST, CDEK_CITIES, DELIVERY_POINTS, CDEK_POSTALCODES, CDEK_ORDER_UUID, CDEK_ORDERS, CDEK_WEBHOOKS, \
-    CDEK_WEBHOOK_UUID
+    CDEK_WEBHOOK_UUID, ORDER_CLIENT_RETURN
 from delivery.schemas.locations import CDEKCitiesSchema, CDEKCitiesErrorResponseSchema, \
     CDEKDeliveryPointsErrorResponseSchema, CDEKDeliveryPointSchema, CDEKPostalCodesResponseSchema, \
     CDEKPostalCodesErrorResponseSchema
@@ -1180,6 +1180,99 @@ class CDEKAdapter(DeliveryAdapter):
                     message=(
                         "; ".join(messages)
                         or "CDEK order deletion failed."
+                    ),
+                    response_data=response,
+                )
+
+        return schema
+
+    def create_client_return(
+            self,
+            cdek_uuid: str | UUID,
+            tariff_code: int,
+    ) -> CdekDeleteOrderResponseSchema:
+        """
+        Регистрация клиентского возврата в системе CDEK
+        для ранее доставленного прямого заказа.
+        """
+
+        try:
+            response = self.client.post(
+                ORDER_CLIENT_RETURN.format(
+                    uuid=cdek_uuid,
+                ),
+                json={
+                    "tariff_code": tariff_code,
+                },
+            )
+
+        except CDEKApiError as exc:
+            response = exc.response_data
+
+            if response:
+                requests = response.get(
+                    "requests",
+                    [],
+                )
+
+                invalid_requests = [
+                    request
+                    for request in requests
+                    if request.get("state") == "INVALID"
+                ]
+
+                if invalid_requests:
+                    request = invalid_requests[0]
+
+                    errors = request.get(
+                        "errors",
+                        [],
+                    )
+
+                    messages = [
+                        error.get("message")
+                        for error in errors
+                        if error.get("message")
+                    ]
+
+                    raise CDEKBusinessError(
+                        operation="create_client_return",
+                        code=(
+                            errors[0].get("code")
+                            if errors
+                            else None
+                        ),
+                        message=(
+                                "; ".join(messages)
+                                or "CDEK client return registration failed."
+                        ),
+                        response_data=response,
+                    ) from exc
+
+            raise
+
+        schema = CdekDeleteOrderResponseSchema.model_validate(
+            response
+        )
+
+        for request in schema.requests:
+            if request.state == "INVALID":
+                messages = [
+                    error.message
+                    for error in request.errors
+                    if error.message
+                ]
+
+                raise CDEKBusinessError(
+                    operation="create_client_return",
+                    code=(
+                        request.errors[0].code
+                        if request.errors
+                        else None
+                    ),
+                    message=(
+                            "; ".join(messages)
+                            or "CDEK client return registration failed."
                     ),
                     response_data=response,
                 )

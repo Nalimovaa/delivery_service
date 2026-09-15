@@ -15,7 +15,7 @@ class CDEKOrderRequestErrorSchema(BaseModel):
     message: str | None = None
 
 
-class CDEKOrderRequestSchema(BaseModel):
+class CDEKOrderRequestSchema1(BaseModel):
     """Информация о запросе CDEK."""
 
     request_uuid: str | None = None
@@ -94,7 +94,7 @@ class CDEKOrderResponseSchema(BaseModel):
 
     entity: CDEKOrderEntitySchema
 
-    requests: list[CDEKOrderRequestSchema] = Field(
+    requests: list[CDEKOrderRequestSchema1] = Field(
         default_factory=list,
     )
 

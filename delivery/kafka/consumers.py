@@ -6,7 +6,7 @@ import json
 from django.conf import settings
 
 from delivery.kafka.topics import KafkaTopic
-from delivery.tasks.order import check_cdek_order_status, check_cdek_order_deletion
+from delivery.tasks.order import check_cdek_order_status, check_cdek_order_deletion, check_cdek_client_return_status
 
 
 class KafkaConsumer:
@@ -59,6 +59,17 @@ class KafkaConsumer:
                 check_cdek_order_deletion.apply_async(
                     args=[
                         data["cdek_delivery_id"],
+                    ],
+                    countdown=30,
+                )
+
+            elif (
+                    message.topic()
+                    == KafkaTopic.CDEK_CLIENT_RETURN_ACCEPTED
+            ):
+                check_cdek_client_return_status.apply_async(
+                    args=[
+                        data["cdek_return_id"],
                     ],
                     countdown=30,
                 )

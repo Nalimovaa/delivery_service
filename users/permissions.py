@@ -116,21 +116,40 @@ class RolePermission(BasePermission):
         if not perm:
             raise PermissionDenied("Method not allowed")
 
-        # Identify the owner of the property
-        owner = (
-                getattr(obj, "owner", None)
-                or getattr(obj, "user", None)
-                or getattr(getattr(obj, "shop", None), "owner", None)
-                or getattr(
-            getattr(getattr(obj, "product", None), "shop", None),
-            "owner",
-            None,
-        )
-                or (obj if isinstance(obj, User) else None)
-        )
+        # Identify owners of the object
+        owners = [
+            getattr(obj, "owner", None),
+            getattr(obj, "user", None),
+            getattr(
+                getattr(obj, "shop", None),
+                "owner",
+                None,
+            ),
+            getattr(
+                getattr(
+                    getattr(obj, "product", None),
+                    "shop",
+                    None,
+                ),
+                "owner",
+                None,
+            ),
+            getattr(
+                getattr(
+                    getattr(obj, "order_delivery", None),
+                    "shop",
+                    None,
+                ),
+                "owner",
+                None,
+            ),
+        ]
 
-        # Check whether the current user is the owner
-        is_owner = owner == request.user
+        if isinstance(obj, User):
+            owners.append(obj)
+
+        # Check whether the current user is one of the object owners
+        is_owner = request.user in owners
 
         # Get user roles
         user_roles = request.user.user_roles.select_related("role")

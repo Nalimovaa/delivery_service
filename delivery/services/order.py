@@ -1,18 +1,19 @@
 from delivery.adapters.cdek import CDEKAdapter
 from delivery.enums import StockReservationStatus
-from delivery.models import CdekDelivery, CdekDeliveryStatusHistory, CdekRequestLog, OrderDelivery
-from delivery.schemas.order import CDEKOrderResponseSchema, CDEKOrderCreateResponseSchema, CdekDeleteOrderResponseSchema
+from delivery.models import CdekDelivery, CdekDeliveryStatusHistory, CdekRequestLog, OrderDelivery, CdekReturn
+from delivery.schemas.order import CDEKOrderResponseSchema, CDEKOrderCreateResponseSchema, \
+    CdekDeleteOrderResponseSchema, CDEKOrderStatusSchema
 from django.db import transaction
 from decimal import Decimal
 from delivery.status_mappers.cdek_mapper import CdekDeliveryStatusMapper
-from order.enams import OrderDeliveryStatus
-from order.models import OrderProduct
+from order.enams import OrderDeliveryStatus, ReturnRequestStatus
+from order.models import OrderProduct, ReturnRequest
 from order.services import OrderStatusService
 from product.services import CartService, StockService
 from delivery.enums import CDEKDeliveryMode
 from delivery.exceptions import CDEKBusinessError
 from delivery.kafka.producers import KafkaProducer
-from delivery.kafka.schemas import CDEKOrderAcceptedEvent, CDEKOrderDeleteAcceptedEvent
+from delivery.kafka.schemas import CDEKOrderAcceptedEvent, CDEKOrderDeleteAcceptedEvent, CDEKClientReturnAcceptedEvent
 from delivery.kafka.topics import KafkaTopic
 from delivery.schemas.tariffs import ShopCalculateDeliveryResultDTO
 from delivery.services.locations import CDEKLocationValidationService, CDEKDeliveryPointService, CDEKCityService
@@ -83,7 +84,6 @@ class CDEKOrderService:
         self.request_log_service = CdekRequestLogService()
         self.status_service = CdekOrderStatusService()
         self.cdek_status_service = CdekStatusService()
-
 
         self.kafka_producer = KafkaProducer()
 
@@ -586,6 +586,110 @@ class CDEKOrderService:
 
         return response
 
+    def create_client_return(
+            self,
+            *,
+            return_request_id: int,
+            tariff_code: int,
+    ) -> CdekReturn:
+        """
+        Регистрация клиентского возврата
+        в системе CDEK для одобренной заявки.
+        """
+
+        return_request = (
+            ReturnRequest.objects
+            .select_related(
+                "order_delivery",
+                "order_delivery__shop",
+            )
+            .get(
+                id=return_request_id,
+            )
+        )
+
+        if (
+                return_request.status
+                != ReturnRequestStatus.APPROVED
+        ):
+            raise ValidationError(
+                "Зарегистрировать возврат в CDEK можно "
+                "только для одобренной заявки."
+            )
+
+        if hasattr(return_request, "cdek_return"):
+            raise ValidationError(
+                "Возврат для данной заявки "
+                "уже зарегистрирован в CDEK."
+            )
+
+        cdek_delivery = (
+            CdekDelivery.objects
+            .filter(
+                order_delivery=return_request.order_delivery,
+            )
+            .first()
+        )
+
+        if cdek_delivery is None:
+            raise ValidationError(
+                "Для доставки заказа не найден "
+                "CDEK delivery."
+            )
+
+        if cdek_delivery.cdek_uuid is None:
+            raise ValidationError(
+                "У CDEK delivery отсутствует UUID."
+            )
+
+        response = self.adapter.create_client_return(
+            cdek_uuid=cdek_delivery.cdek_uuid,
+            tariff_code=tariff_code,
+        )
+
+        self.request_log_service.save_create_client_return_response(
+            cdek_delivery=cdek_delivery,
+            response=response,
+        )
+
+        request = next(
+            (
+                request
+                for request in response.requests
+                if request.type == "CREATE_CLIENT_RETURN"
+            ),
+            None,
+        )
+
+        if request is None:
+            raise ValidationError(
+                "CDEK не вернул информацию "
+                "о регистрации клиентского возврата."
+            )
+
+        cdek_return = CdekReturn.objects.create(
+            return_request=return_request,
+            cdek_delivery=cdek_delivery,
+            cdek_uuid=response.entity.uuid,
+            tariff_code=tariff_code,
+            request_state=request.state,
+        )
+
+        if request.state in (
+                "ACCEPTED",
+        ):
+            event = CDEKClientReturnAcceptedEvent(
+                cdek_return_id=cdek_return.id,
+                cdek_uuid=str(cdek_return.cdek_uuid),
+            )
+
+            self.kafka_producer.send(
+                topic=KafkaTopic.CDEK_CLIENT_RETURN_ACCEPTED,
+                message=event.model_dump(),
+            )
+
+        return cdek_return
+
 
 class CdekOrderStatusService:
 
@@ -738,6 +842,25 @@ class CdekRequestLogService:
                 date_time=request.date_time,
                 errors=request.errors,
                 response_data=response.model_dump(mode="json"),
+            )
+
+    def save_create_client_return_response(
+            self,
+            *,
+            cdek_delivery: CdekDelivery,
+            response: CdekDeleteOrderResponseSchema,
+    ):
+        for request in response.requests:
+            self._save_request(
+                cdek_delivery=cdek_delivery,
+                cdek_uuid=response.entity.uuid,
+                request_type=request.type,
+                state=request.state,
+                date_time=request.date_time,
+                errors=request.errors,
+                response_data=response.model_dump(
+                    mode="json",
+                ),
             )
 
 
@@ -1165,6 +1288,63 @@ class CdekStatusService:
         )
 
         return True
+
+    def _is_client_return_finished(
+            self,
+            *,
+            status: CDEKOrderStatusSchema,
+    ) -> bool:
+        return status.code in {
+            # реальные финальные статусы CDEK
+        }
+
+    def check_client_return(
+            self,
+            *,
+            cdek_return_id: int,
+    ) -> bool:
+        """
+        Проверяет статус клиентского возврата
+        в системе CDEK.
+
+        Возвращает:
+        True  — возврат получил конечный статус,
+        False — необходимо повторить проверку.
+        """
+
+        cdek_return = (
+            CdekReturn.objects
+            .select_related(
+                "cdek_delivery",
+            )
+            .get(
+                id=cdek_return_id,
+            )
+        )
+
+        response = self.adapter.get_order_uuid(
+            uuid=str(cdek_return.cdek_uuid),
+        )
+
+        if not response.entity.statuses:
+            return False
+
+        last_status = response.entity.statuses[-1]
+
+        cdek_return.cdek_status_code = last_status.code
+        cdek_return.cdek_status_name = last_status.name
+
+        cdek_return.save(
+            update_fields=[
+                "cdek_status_code",
+                "cdek_status_name",
+                "updated_at",
+            ],
+        )
+
+        return self._is_client_return_finished(
+            status=last_status,
+        )
 
 
 class CdekWebhookService:

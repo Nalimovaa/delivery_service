@@ -3,7 +3,7 @@ from django.contrib import admin
 from delivery.models import (
     OrderDelivery,
     CdekDelivery,
-    CDEKTariff, CDEKCity, CDEKDeliveryPoint, CdekRequestLog, CdekDeliveryStatusHistory,
+    CDEKTariff, CDEKCity, CDEKDeliveryPoint, CdekRequestLog, CdekDeliveryStatusHistory, CdekReturn,
 )
 
 
@@ -262,3 +262,42 @@ class CdekRequestLogAdmin(admin.ModelAdmin):
     ordering = (
         "-created_at",
     )
+
+
+@admin.register(CdekReturn)
+class CdekReturnAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "return_request",
+        "cdek_delivery",
+        "cdek_uuid",
+        "tariff_code",
+        "request_state",
+        "cdek_status_code",
+        "cdek_status_name",
+        "created_at",
+        "updated_at",
+    )
+
+    list_filter = (
+        "request_state",
+        "cdek_status_code",
+        "created_at",
+    )
+
+    search_fields = (
+        "cdek_uuid",
+        "cdek_status_code",
+        "cdek_status_name",
+        "return_request__id",
+        "return_request__owner__email",
+        "cdek_delivery__id",
+        "cdek_delivery__cdek_uuid",
+    )
+
+    autocomplete_fields = (
+        "return_request",
+        "cdek_delivery",
+    )
+
+    ordering = ("-created_at",)

@@ -1,7 +1,8 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from delivery.views import CDEKTariffViewSet, DeliveryPreCalculationViewSet, DeliveryCalculationViewSet, \
-    DeliveryPointsViewSet, CdekWebhookOrderStatusView
+    DeliveryPointsViewSet, CdekWebhookOrderStatusView, CDEKDeliveryDeleteView
+from order.views import CDEKClientReturnCreateView
 
 router = DefaultRouter()
 
@@ -37,4 +38,14 @@ urlpatterns = [
             CdekWebhookOrderStatusView.as_view(),
             name="cdek-webhook-order-status",
         ),
+    path(
+        "delivery/cdek/delete/",
+        CDEKDeliveryDeleteView.as_view(),
+        name="cdek-delivery-delete",
+    ),
+    path(
+        "return-requests/<int:pk>/cdek-return/",
+        CDEKClientReturnCreateView.as_view(),
+        name="return-request-cdek-return",
+    ),
 ]

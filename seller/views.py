@@ -3,9 +3,11 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
 import copy
 from delivery.factories.delivery import DeliveryFactory
+from order.models import ReturnRequest
+from order.serializers import ReturnRequestSerializer
 from seller.models import Shop, SellerRequest
 from seller.serializers import ShopSerializer, ShopDeliverySettingSerializer, CDEKShopDeliverySettingReadSerializer, \
-    SellerRequestSerializer, SellerRequestRejectSerializer
+    SellerRequestSerializer, SellerRequestRejectSerializer, ReturnRequestUpdateSerializer
 from users.permissions import IsCustomAuthenticated, RolePermission
 from seller.services import CDEKShopDeliverySettingService, SellerService, SellerRequestService
 from django.db import transaction
@@ -13,6 +15,12 @@ from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from drf_spectacular.utils import (
+    extend_schema,
+    OpenApiExample,
+    OpenApiResponse,
+)
+from rest_framework.views import APIView
 
 
 class ShopViewSet(viewsets.ModelViewSet):
@@ -439,3 +447,177 @@ class SellerRequestViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class ReturnRequestShopListView(APIView):
+    """
+    Просмотр продавцом списка заявок на возврат
+    по его магазинам.
+    """
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "ReturnRequest"
+
+    @extend_schema(
+        summary="Список заявок на возврат магазина",
+        description=(
+            "Возвращает список заявок на возврат заказов, "
+            "относящихся к магазинам текущего продавца."
+        ),
+        responses={
+            200: ReturnRequestSerializer(many=True),
+            401: OpenApiResponse(
+                description="Пользователь не авторизован.",
+            ),
+            403: OpenApiResponse(
+                description="Недостаточно прав.",
+            ),
+        },
+    )
+    def get(self, request):
+        return_requests = (
+            ReturnRequest.objects
+            .filter(
+                order_delivery__shop__owner=request.user,
+            )
+            .select_related(
+                "owner",
+                "order_delivery",
+                "order_delivery__shop",
+                "order_delivery__shop__owner",
+            )
+            .order_by("-created_at")
+        )
+
+        serializer = ReturnRequestSerializer(
+            return_requests,
+            many=True,
+        )
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class ReturnRequestShopDetailView(APIView):
+    """
+    Просмотр продавцом конкретной заявки
+    на возврат заказа.
+    """
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "ReturnRequest"
+
+    @extend_schema(
+        summary="Просмотр заявки продавцом",
+        description=(
+            "Возвращает информацию о конкретной заявке "
+            "на возврат заказа.\n\n"
+            "Продавец может просматривать только заявки, "
+            "относящиеся к его магазину."
+        ),
+        responses={
+            200: ReturnRequestSerializer,
+            401: OpenApiResponse(
+                description="Пользователь не авторизован.",
+            ),
+            403: OpenApiResponse(
+                description="Недостаточно прав.",
+            ),
+            404: OpenApiResponse(
+                description="Заявка не найдена.",
+            ),
+        },
+    )
+    def get(self, request, pk):
+        return_request = get_object_or_404(
+            ReturnRequest.objects.select_related(
+                "owner",
+                "order_delivery",
+                "order_delivery__shop",
+                "order_delivery__shop__owner",
+            ),
+            pk=pk,
+        )
+
+        self.check_object_permissions(
+            request,
+            return_request,
+        )
+
+        serializer = ReturnRequestSerializer(
+            return_request,
+        )
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
+
+    @extend_schema(
+        summary="Рассмотрение заявки на возврат",
+        description=(
+                "Позволяет продавцу изменить статус заявки "
+                "на возврат и указать причину отказа."
+        ),
+        request=ReturnRequestUpdateSerializer,
+        responses={
+            200: ReturnRequestSerializer,
+            400: OpenApiResponse(
+                description="Ошибка валидации.",
+            ),
+            401: OpenApiResponse(
+                description="Пользователь не авторизован.",
+            ),
+            403: OpenApiResponse(
+                description="Недостаточно прав.",
+            ),
+            404: OpenApiResponse(
+                description="Заявка не найдена.",
+            ),
+        },
+    )
+    def patch(self, request, pk):
+        return_request = get_object_or_404(
+            ReturnRequest.objects.select_related(
+                "owner",
+                "order_delivery",
+                "order_delivery__shop",
+                "order_delivery__shop__owner",
+            ),
+            pk=pk,
+        )
+
+        self.check_object_permissions(
+            request,
+            return_request,
+        )
+
+        serializer = ReturnRequestUpdateSerializer(
+            return_request,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+
+        serializer.save()
+
+        response_serializer = ReturnRequestSerializer(
+            return_request,
+        )
+
+        return Response(
+            response_serializer.data,
+            status=status.HTTP_200_OK,
+        )
+
+

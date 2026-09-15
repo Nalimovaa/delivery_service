@@ -85,3 +85,20 @@ def check_cdek_order_deletion(
             args=[cdek_delivery_id],
             countdown=30,
         )
+
+
+@shared_task
+def check_cdek_client_return_status(
+    cdek_return_id: int,
+):
+    service = CdekStatusService()
+
+    result = service.check_client_return(
+        cdek_return_id=cdek_return_id,
+    )
+
+    if result is False:
+        check_cdek_client_return_status.apply_async(
+            args=[cdek_return_id],
+            countdown=30,
+        )

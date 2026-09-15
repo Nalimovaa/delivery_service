@@ -1,7 +1,8 @@
 from rest_framework import serializers
 
 from delivery.models import CdekDeliveryStatusHistory, CdekDelivery, OrderDelivery
-from .models import Order, OrderProduct
+from .models import Order, OrderProduct, ReturnRequest
+
 
 # Сериалайзеры для создания заказов на перевозку во внешних системах
 
@@ -144,4 +145,65 @@ class OrderStatusSerializer(serializers.ModelSerializer):
             "created_at",
             "status",
             "deliveries",
+        )
+
+
+
+
+class ReturnRequestCreateSerializer(serializers.ModelSerializer):
+    """
+       Сериализатор для создания покупателем заявки
+       на возврат доставленного заказа.
+       """
+
+    class Meta:
+        model = ReturnRequest
+        fields = (
+            "order_delivery",
+            "reason",
+        )
+
+    order_delivery = serializers.PrimaryKeyRelatedField(
+        queryset=OrderDelivery.objects.all(),
+    )
+
+
+class ReturnRequestSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для отображения заявки покупателя
+    на возврат заказа.
+    """
+
+    shop = serializers.ReadOnlyField(source="shop.name")
+    seller = serializers.ReadOnlyField(source="seller.email")
+    status_display = serializers.CharField(
+        source="get_status_display",
+        read_only=True,
+    )
+
+    class Meta:
+        model = ReturnRequest
+        fields = (
+            "id",
+            "order_delivery",
+            "owner",
+            "shop",
+            "seller",
+            "status",
+            "status_display",
+            "reason",
+            "rejection_reason",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = (
+            "id",
+            "owner",
+            "shop",
+            "seller",
+            "status",
+            "status_display",
+            "rejection_reason",
+            "created_at",
+            "updated_at",
         )

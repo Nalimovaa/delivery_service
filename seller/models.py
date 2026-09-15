@@ -1,9 +1,10 @@
 from django.db import models
 from django.conf import settings
 from delivery.models import DeliveryType
-from users.models import User
+from django.contrib.auth import get_user_model
 
 
+User = get_user_model()
 
 class Shop(models.Model):
     name = models.CharField(max_length=255)

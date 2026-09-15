@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from order.models import Order, OrderProduct
+from order.models import Order, OrderProduct, ReturnRequest
 
 
 class OrderProductInline(admin.TabularInline):
@@ -59,4 +59,45 @@ class OrderProductAdmin(admin.ModelAdmin):
         "order",
         "order_delivery",
         "unique_product",
+    )
+
+
+@admin.register(ReturnRequest)
+class ReturnRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "owner",
+        "order_delivery",
+        "status",
+        "reason",
+        "created_at",
+        "updated_at",
+    )
+
+    list_filter = (
+        "status",
+        "created_at",
+    )
+
+    search_fields = (
+        "id",
+        "owner__email",
+        "owner__first_name",
+        "owner__last_name",
+        "order_delivery__id",
+        "reason",
+    )
+
+    autocomplete_fields = (
+        "owner",
+        "order_delivery",
+    )
+
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+    )
+
+    ordering = (
+        "-created_at",
     )

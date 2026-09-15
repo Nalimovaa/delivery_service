@@ -1,9 +1,8 @@
 from django.db import models
 from django.contrib.auth import get_user_model
-
 from delivery.models import OrderDelivery
-from order.enams import OrderStatus
-from product.models import Product, UniqueProduct
+from order.enams import OrderStatus, ReturnRequestStatus
+from product.models import UniqueProduct
 
 User = get_user_model()
 
@@ -94,3 +93,56 @@ class CartItem(models.Model):
                 name="unique_product_in_cart",
             ),
         ]
+
+
+class ReturnRequest(models.Model):
+    """
+    Заявка покупателя на возврат полученного заказа.
+    """
+
+    order_delivery = models.ForeignKey(
+        OrderDelivery,
+        on_delete=models.PROTECT,
+        related_name="return_requests",
+        verbose_name="Доставка заказа",
+    )
+
+    owner = models.ForeignKey(User, on_delete=models.PROTECT, related_name="return_requests", verbose_name="Покупатель")
+
+    status = models.PositiveSmallIntegerField(
+        choices=ReturnRequestStatus.choices,
+        default=ReturnRequestStatus.REQUESTED,
+        verbose_name="Статус заявки",
+    )
+
+    reason = models.TextField(
+        verbose_name="Причина возврата",
+    )
+
+    rejection_reason = models.TextField(
+        blank=True,
+        null=True,
+        verbose_name="Причина отказа",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
+
+    @property
+    def shop(self):
+        return self.order_delivery.shop
+
+    @property
+    def seller(self):
+        return self.shop.owner
+
+    def __str__(self):
+        return (
+            f"Заявка на возврат #{self.id} "
+            f"от {self.owner.email}"
+        )

@@ -1,3 +1,5 @@
+from order.enams import ReturnRequestStatus
+from order.models import ReturnRequest
 from seller.models import Shop, CDEKShopDeliverySetting, SellerRequest
 from rest_framework import serializers
 from delivery.serializers import CDEKTariffSerializer
@@ -96,3 +98,71 @@ class SellerRequestRejectSerializer(serializers.Serializer):
         allow_blank=False,
         max_length=2000,
     )
+
+
+class ReturnRequestUpdateSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для рассмотрения заявки продавцом.
+    """
+
+    class Meta:
+        model = ReturnRequest
+        fields = (
+            "status",
+            "rejection_reason",
+        )
+
+    def validate(self, attrs):
+        if self.instance.status != ReturnRequestStatus.REQUESTED:
+            raise serializers.ValidationError(
+                "Рассмотренную заявку нельзя изменить."
+            )
+
+        status_value = attrs.get("status")
+
+        if status_value is None:
+            raise serializers.ValidationError(
+                {
+                    "status": (
+                        "Необходимо указать статус: "
+                        "APPROVED или REJECTED."
+                    )
+                }
+            )
+
+        if status_value == ReturnRequestStatus.REQUESTED:
+            raise serializers.ValidationError(
+                {
+                    "status": (
+                        "Заявку нельзя оставить в статусе "
+                        "«На рассмотрении»."
+                    )
+                }
+            )
+
+        rejection_reason = attrs.get("rejection_reason")
+
+        if status_value == ReturnRequestStatus.REJECTED:
+            if not rejection_reason:
+                raise serializers.ValidationError(
+                    {
+                        "rejection_reason": (
+                            "Необходимо указать причину отказа."
+                        )
+                    }
+                )
+
+        if status_value == ReturnRequestStatus.APPROVED:
+            if rejection_reason:
+                raise serializers.ValidationError(
+                    {
+                        "rejection_reason": (
+                            "Причину можно указать только "
+                            "при отклонении заявки."
+                        )
+                    }
+                )
+
+            attrs["rejection_reason"] = None
+
+        return attrs

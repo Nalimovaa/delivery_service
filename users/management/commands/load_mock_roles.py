@@ -34,6 +34,7 @@ class Command(BaseCommand):
             "ShopDeliverySetting",
             "SellerRequest",
             "Order",
+            "ReturnRequest",
             "Cart",
             "Role",
             "UserRole",
@@ -104,6 +105,12 @@ class Command(BaseCommand):
                 "delete_permission": True,
             },
             {"role": "Seller", "element": "Order", "read_permission": True, "update_permission": True},
+            {
+                "role": "Seller",
+                "element": "ReturnRequest",
+                "read_permission": True,
+                "update_permission": True,
+            },
             {"role": "Seller", "element": "ShopDeliverySetting",
              "read_permission": True, "create_permission": True, "delete_permission": True},
 
@@ -125,6 +132,12 @@ class Command(BaseCommand):
                 "role": "User",
                 "element": "UniqueProduct",
                 "read_all_permission": True,
+            },
+            {
+                "role": "User",
+                "element": "ReturnRequest",
+                "read_permission": True,
+                "create_permission": True,
             },
 
             # Guest — Viewing public information only

@@ -25,3 +25,9 @@ class CDEKOrderDeleteAcceptedEvent(BaseModel):
     event: str = "cdek.order.delete.accepted"
     cdek_delivery_id: int
     cdek_uuid: str
+
+
+class CDEKClientReturnAcceptedEvent(BaseModel):
+    event: str = "cdek.client-return.accepted"
+    cdek_return_id: int
+    cdek_uuid: str

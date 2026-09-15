@@ -26,3 +26,10 @@ class OrderDeliveryStatus(models.IntegerChoices):
     DELIVERED = 4, "Доставлена"
     FAILED = 5, "Ошибка"
     CANCELLED = 6, "Отменена"
+
+
+class ReturnRequestStatus(models.IntegerChoices):
+    """Для статусов запроса покупателя на возврат товара"""
+    REQUESTED = 1, "На рассмотрении"
+    APPROVED = 2, "Одобрена"
+    REJECTED = 3, "Отклонена"

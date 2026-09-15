@@ -3,11 +3,16 @@ from rest_framework.response import Response
 from delivery.facade import DeliveryFacade
 from django.conf import settings
 from delivery.serializers import CDEKTariffSerializer, ShopDeliveryResultSerializer, CalculateDeliveryRequestSerializer, \
-    CartDeliveryResultSerializer, CDEKDeliveryPointSerializer, APIWebhookOrderStatusSerializer
+    CartDeliveryResultSerializer, CDEKDeliveryPointSerializer, APIWebhookOrderStatusSerializer, \
+    CDEKOrderDeleteRequestSerializer, CDEKOrderDeleteResponseSerializer
 from delivery.services.locations import CDEKDeliveryPointService
-from delivery.services.order import CdekWebhookService
+from delivery.services.order import CdekWebhookService, CDEKOrderService
 from delivery.services.tariffs import CDEKTariffService
-from drf_spectacular.utils import extend_schema, OpenApiExample
+from drf_spectacular.utils import (
+    extend_schema,
+    OpenApiExample,
+    OpenApiResponse,
+)
 from users.permissions import IsCustomAuthenticated, RolePermission
 from rest_framework import status
 from rest_framework.permissions import AllowAny
@@ -372,3 +377,77 @@ class CdekWebhookOrderStatusView(APIView):
             raise PermissionDenied(
                 "IP address is not allowed.",
             )
+
+
+class CDEKDeliveryDeleteView(APIView):
+    """
+   Удаление ранее созданного заказа из системы CDEK.
+  Заказ может быть удален только до начала движения груза на складе CDEK.
+    """
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "Order"
+
+    @extend_schema(
+        summary="Удаление отправления CDEK",
+        description=(
+            "Отправляет запрос на удаление ранее созданного "
+            "отправления из системы CDEK.\n\n"
+
+            "Запрос на удаление обрабатывается CDEK асинхронно. "
+            "Заказ может быть удален только до начала движения груза на складе CDEK. \n\n"
+            "Успешный ответ endpoint означает принятие запроса "
+            "на удаление, но не подтверждает фактическое удаление "
+            "отправления."
+        ),
+        request=CDEKOrderDeleteRequestSerializer,
+        responses={
+            202: CDEKOrderDeleteResponseSerializer,
+            400: OpenApiResponse(
+                description="Ошибка валидации или отправление не найдено.",
+            ),
+            401: OpenApiResponse(
+                description="Пользователь не авторизован.",
+            ),
+            403: OpenApiResponse(
+                description="Недостаточно прав.",
+            ),
+        },
+    )
+    def post(self, request):
+        serializer = CDEKOrderDeleteRequestSerializer(
+            data=request.data,
+        )
+        serializer.is_valid(raise_exception=True)
+
+        cdek_uuid = serializer.validated_data["cdek_uuid"]
+
+        service = CDEKOrderService(
+            user=request.user,
+        )
+
+        response = service.cancel_delivery(
+            cdek_uuid=cdek_uuid,
+        )
+
+        delete_request = next(
+            request
+            for request in response.requests
+            if request.type == "DELETE"
+        )
+
+        return Response(
+            {
+                "cdek_uuid": str(cdek_uuid),
+                "status": delete_request.state,
+                "message": (
+                    "Запрос на удаление отправления CDEK принят. "
+                    "Результат удаления будет проверен асинхронно."
+                ),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
