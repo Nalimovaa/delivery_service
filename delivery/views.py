@@ -13,12 +13,17 @@ from drf_spectacular.utils import (
     OpenApiExample,
     OpenApiResponse,
 )
+
+from order.models import ReturnRequest
 from users.permissions import IsCustomAuthenticated, RolePermission
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied
+from delivery.serializers import CDEKClientReturnCreateSerializer, CdekReturnSerializer
+from django.shortcuts import get_object_or_404
+
 
 
 class CDEKTariffViewSet(viewsets.ViewSet):
@@ -450,4 +455,90 @@ class CDEKDeliveryDeleteView(APIView):
                 ),
             },
             status=status.HTTP_202_ACCEPTED,
+        )
+
+
+
+class CDEKClientReturnCreateView(APIView):
+    """
+    Создание клиентского возврата
+    в системе CDEK для одобренной заявки.
+    """
+
+    permission_classes = [
+        IsCustomAuthenticated,
+        RolePermission,
+    ]
+
+    business_element = "ReturnRequest"
+
+    @extend_schema(
+        summary="Создание возврата в CDEK",
+        description=(
+            "Регистрирует клиентский возврат "
+            "в системе CDEK для одобренной заявки."
+        ),
+        request=CDEKClientReturnCreateSerializer,
+        responses={
+            201: CdekReturnSerializer,
+            400: OpenApiResponse(
+                description=(
+                    "Ошибка валидации или бизнес-ошибка CDEK."
+                ),
+            ),
+            401: OpenApiResponse(
+                description="Пользователь не авторизован.",
+            ),
+            403: OpenApiResponse(
+                description="Недостаточно прав.",
+            ),
+            404: OpenApiResponse(
+                description="Заявка на возврат не найдена.",
+            ),
+        },
+    )
+    def post(
+        self,
+        request,
+        pk,
+    ):
+        return_request = get_object_or_404(
+            ReturnRequest.objects.select_related(
+                "order_delivery",
+                "order_delivery__shop",
+                "order_delivery__shop__owner",
+            ),
+            pk=pk,
+        )
+
+        self.check_object_permissions(
+            request,
+            return_request,
+        )
+
+        serializer = CDEKClientReturnCreateSerializer(
+            data=request.data,
+        )
+        serializer.is_valid(
+            raise_exception=True,
+        )
+
+        service = CDEKOrderService(
+            user=request.user,
+        )
+
+        cdek_return = service.create_client_return(
+            return_request_id=return_request.id,
+            tariff_code=serializer.validated_data[
+                "tariff_code"
+            ],
+        )
+
+        response_serializer = CdekReturnSerializer(
+            cdek_return,
+        )
+
+        return Response(
+            response_serializer.data,
+            status=status.HTTP_201_CREATED,
         )

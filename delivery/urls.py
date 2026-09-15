@@ -1,8 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from delivery.views import CDEKTariffViewSet, DeliveryPreCalculationViewSet, DeliveryCalculationViewSet, \
-    DeliveryPointsViewSet, CdekWebhookOrderStatusView, CDEKDeliveryDeleteView
-from order.views import CDEKClientReturnCreateView
+    DeliveryPointsViewSet, CdekWebhookOrderStatusView, CDEKDeliveryDeleteView, CDEKClientReturnCreateView
 
 router = DefaultRouter()
 
