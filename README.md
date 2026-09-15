@@ -43,7 +43,6 @@ docker-compose exec web python manage.py createsuperuser
 * **Безопасность:** ролевая модель доступа (RBAC) для разграничения прав между Покупателями, Продавцами (владельцами магазинов) и Администраторами платформы.
 
 
-
 # Описание общей архитектуры проекта
 ## Создание заказа в интернет-магазине
 
@@ -7066,41 +7065,6 @@ CDEKClient
 Т.е. обработка ошибок осуществляется только классом CDEKApiError:  Бизнес-ошибки API СДЭК обрабатываются на уровне адаптера (`CDEKAdapter`).
 
 
-# Архитектура создания заказа в системе СДЭК
-```
-Marketplace
-     |
-     |
-DeliveryFacade
-     |
-     |
-DeliveryAdapter (интерфейс)
-     |
-     |
-CDEKAdapter
-     |
-     |
-CDEKClient
-     |
-     |
-CDEK API
-```
-
-- `CDEKClient` — **не знает бизнес-логику доставки**, он только HTTP-клиент:
-    - OAuth;
-    - токен;
-    - GET/POST/DELETE;
-    - обработка транспортных ошибок.
-- `CDEKAdapter` — **адаптирует API СДЭК под интерфейс маркетплейса**:
-    - формирует данные заказа;
-    - вызывает клиент;
-    - анализирует бизнес-ответы;
-    - преобразует ответ СДЭК в внутренний формат.
-- `DeliveryFacade` — **единая точка входа бизнес-логики**:
-    - "создать доставку";
-    - "рассчитать доставку";
-    - "получить статус";
-    - "отменить".
 
 ## Методы CDEKAdapter
 
@@ -7969,3 +7933,1290 @@ CDEK UUID
 Передача заказа продавцу
 ```
 
+## Архитектура вебхуков
+
+### Этап регистрации заказа
+
+```
+POST /api/orders/
+       │
+       ▼
+DeliveryFacade.create_order()
+       │
+       ▼
+CdekOrderService.create_delivery()
+       │
+       ├── POST /orders
+       │
+       ├── сохранить CREATE response
+       │
+       ├── получить cdek_uuid
+       │
+       ├── GET /orders/{uuid}
+       │
+       ├── сохранить response
+       │
+       ├── сохранить статусы
+       │
+       └── Kafka: cdek.order.accepted
+                    │
+                    ▼
+              Celery polling
+                    │
+                    ▼
+             GET /orders/{uuid}
+```
+
+Пока CREATE не стал `SUCCESSFUL`:
+
+```
+webhook ORDER_STATUS
+        │
+        ▼
+   не обрабатываем
+```
+
+После:
+
+```
+CREATE = SUCCESSFUL
+       │
+       ├── получили cdek_number
+       ├── сохранили shipment_track_id
+       ├── stock_status = CONFIRMED
+       └── можно обрабатывать ORDER_STATUS
+```
+
+И дальше уже:
+
+```
+CDEK
+ │
+ │ ORDER_STATUS webhook
+ ▼
+POST /api/delivery/webhooks/cdek/order-status/
+ │
+ ▼
+CdekWebhookService
+ │
+ ├── проверка IP
+ ├── поиск CdekDelivery по cdek_number
+ ├── проверка, что регистрация завершена
+ ├── сохранение CDEK status
+ ├── сохранение истории
+ ├── обновление OrderDelivery.status
+ └── обновление Order.status
+```
+
+CdekDeliveryStatusHistory должн хранить **историю статусов независимо от источника**.
+
+Источник может быть:
+
+```
+GET /orders/{uuid}
+```
+
+или:
+
+```
+ORDER_STATUS webhook
+```
+
+То есть:
+
+```
+                  ┌─ GET /orders/{uuid}
+                  │
+CDEK status ──────┤
+                  │
+                  └─ ORDER_STATUS webhook
+                           │
+                           ▼
+                CdekDeliveryStatusHistory
+```
+
+
+
+## Архитектура удаления ранее созданного заказа из системы CDEK
+
+Удаление ранее зарегистрированного заказа из системы CDEK выполняется **асинхронно**.
+
+Операция состоит из двух этапов:
+
+1. отправка запроса на удаление заказа в CDEK;
+2. периодическая проверка фактического завершения удаления.
+
+HTTP endpoint не ожидает завершения удаления. После получения от CDEK ответа `ACCEPTED` дальнейшая проверка выполняется через Kafka → Celery.
+
+Заказ CDEK может быть удалён только **до начала движения груза на складе CDEK**.
+
+### Общая схема
+
+```
+Client
+   │
+   │ POST /delivery/cdek/delete/
+   │ cdek_uuid
+   ▼
+CDEKDeliveryDeleteView
+   │
+   ▼
+CDEKOrderService.cancel_delivery()
+   │
+   ▼
+CDEKAdapter.cancel_delivery()
+   │
+   ▼
+CDEKClient
+   │
+   │ DELETE /orders/{uuid}
+   ▼
+CDEK API
+   │
+   │ HTTP 202
+   │ state = ACCEPTED
+   ▼
+CDEKOrderService
+   │
+   ├── сохраняет CdekRequestLog
+   │
+   └── KafkaProducer
+           │
+           │ cdek.order.delete.accepted
+           ▼
+      Kafka
+           │
+           ▼
+    KafkaConsumer
+           │
+           │ countdown=30
+           ▼
+    Celery task
+    check_cdek_order_deletion
+           │
+           ▼
+    CdekStatusService
+    check_order_deletion()
+           │
+           ▼
+    CDEKAdapter.is_order_deleted()
+           │
+           │ GET /orders/{uuid}
+           ▼
+        CDEK API
+           │
+           ├── заказ ещё существует
+           │       │
+           │       └── повтор через 30 сек.
+           │
+           └── v2_entity_not_found
+                   │
+                   ▼
+          mark_delivery_cancelled()
+                   │
+                   ├── OrderDelivery → CANCELLED
+                   ├── CdekDelivery → CANCELLED
+                   ├── возврат товара на склад
+                   ├── stock_status → RELEASED
+                   ├── запись истории
+                   └── пересчёт Order.status
+```
+
+### 1. HTTP endpoint
+
+Для удаления используется отдельный `APIView`, так как операция специфична для CDEK и не является CRUD-операцией над `CdekDelivery`.
+
+```
+POST /delivery/cdek/delete/
+```
+
+Тело запроса:
+
+```
+{
+    "cdek_uuid": "f8e732b2-0fb3-4ba2-a4e9-5e89063d2474"
+}
+```
+
+Endpoint:
+
+```
+CDEKDeliveryDeleteView
+```
+
+Валидация UUID выполняется через `CDEKOrderDeleteRequestSerializer`.
+
+После успешной отправки запроса в CDEK endpoint возвращает HTTP `202 Accepted`.
+
+Пример ответа:
+
+```
+{
+    "cdek_uuid": "f8e732b2-0fb3-4ba2-a4e9-5e89063d2474",
+    "status": "ACCEPTED",
+    "message": "Запрос на удаление отправления CDEK принят. Результат удаления будет проверен асинхронно."
+}
+```
+
+Поле `status` берётся непосредственно из объекта `DELETE` в ответе CDEK:
+
+```
+delete_request = next(
+    request
+    for request in response.requests
+    if request.type == "DELETE"
+)
+```
+
+Таким образом, значение `ACCEPTED` не захардкожено в endpoint.
+
+### 2. Сервисный слой
+
+Основная бизнес-операция находится в:
+
+```
+CDEKOrderService.cancel_delivery()
+```
+
+Сервис:
+
+1. находит локальный `CdekDelivery` по `cdek_uuid`;
+2. отправляет запрос на удаление через `CDEKAdapter`;
+3. сохраняет ответ CDEK в `CdekRequestLog`;
+4. публикует Kafka-событие `cdek.order.delete.accepted`;
+5. возвращает исходный ответ CDEK в endpoint.
+
+Локальная запись `CdekDelivery` **не удаляется**.
+
+Она необходима для хранения истории отправления, запросов CDEK, статусов и дальнейшей обработки результата удаления.
+
+
+### 3. Adapter и CDEK API
+
+За взаимодействие с внешним API отвечает:
+
+```
+CDEKAdapter
+    ↓
+CDEKClient
+```
+
+Удаление выполняется запросом:
+
+```
+DELETE /orders/{uuid}
+```
+
+Ответ CDEK преобразуется в:
+
+```
+CdekDeleteOrderResponseSchema
+```
+
+Схема описывает:
+
+- `entity.uuid`;
+- список `requests`;
+- ошибки;
+- предупреждения;
+- связанные сущности.
+
+Пример ответа CDEK:
+
+```
+{
+    "entity": {
+        "uuid": "f8e732b2-0fb3-4ba2-a4e9-5e89063d2474"
+    },
+    "requests": [
+        {
+            "type": "DELETE",
+            "state": "ACCEPTED",
+            "errors": [],
+            "warnings": [],
+            "date_time": "2026-09-11T11:14:31Z",
+            "request_uuid": "4d12e37b-114f-4702-b3a3-883c79125039"
+        }
+    ],
+    "related_entities": []
+}
+```
+
+### Обработка `INVALID`
+
+HTTP `202` от CDEK не гарантирует успешность бизнес-операции.
+
+Поэтому после получения ответа проверяется состояние каждого запроса:
+
+```
+for request in schema.requests:
+    if request.state == "INVALID":
+        ...
+```
+
+При `INVALID` формируется `CDEKBusinessError`.
+
+Таким образом, учитываются два уровня результата:
+
+```
+HTTP response
+     │
+     ├── HTTP error → CDEKApiError
+     │
+     └── HTTP 202
+             │
+             ├── ACCEPTED → удаление принято CDEK
+             │
+             └── INVALID → CDEKBusinessError
+```
+
+### 4. Логирование запроса
+
+После получения ответа DELETE вызывается:
+
+```
+CdekRequestLogService.save_delete_order_response()
+```
+
+Для каждого элемента `response.requests` создаётся `CdekRequestLog`.
+
+Сохраняются:
+
+- `cdek_delivery`;
+- `cdek_uuid`;
+- тип запроса (`DELETE`);
+- состояние (`ACCEPTED` / `INVALID`);
+- дата запроса;
+- код ошибки;
+- сообщение ошибки;
+- полный `response_data`.
+
+Таким образом, запрос на удаление имеет отдельную запись аудита.
+
+
+### 5. Kafka-событие
+
+После принятия запроса CDEK публикуется событие:
+
+```
+cdek.order.delete.accepted
+```
+
+Схема события:
+
+```
+class CDEKOrderDeleteAcceptedEvent(BaseModel):
+    event: str = "cdek.order.delete.accepted"
+    cdek_delivery_id: int
+    cdek_uuid: str
+```
+
+Сообщение содержит локальный идентификатор доставки и UUID заказа CDEK.
+
+```
+{
+    "event": "cdek.order.delete.accepted",
+    "cdek_delivery_id": 1,
+    "cdek_uuid": "f8e732b2-0fb3-4ba2-a4e9-5e89063d2474"
+}
+```
+
+Kafka используется здесь для передачи управления асинхронной проверке результата удаления.
+
+
+### 6. Kafka Consumer
+
+`KafkaConsumer` подписан на два события:
+
+```
+self.consumer.subscribe([
+    KafkaTopic.CDEK_ORDER_ACCEPTED,
+    KafkaTopic.CDEK_ORDER_DELETE_ACCEPTED,
+])
+```
+
+Для удаления обрабатывается:
+
+```
+cdek.order.delete.accepted
+```
+
+Consumer не выполняет бизнес-логику удаления.
+
+Он только передаёт событие в Celery:
+
+```
+check_cdek_order_deletion.apply_async(
+    args=[
+        data["cdek_delivery_id"],
+    ],
+    countdown=30,
+)
+```
+
+Таким образом:
+
+```
+Kafka Consumer
+      ↓
+Celery Task
+      ↓
+CdekStatusService
+```
+
+Consumer запускается как отдельный Docker Compose service:
+
+```
+kafka-consumer:
+  build: .
+  command: python manage.py kafka_consumer
+  restart: always
+```
+
+Поэтому Kafka consumer автоматически запускается вместе с проектом.
+
+### 7. Проверка фактического удаления
+
+CDEK выполняет удаление асинхронно.
+
+Поэтому `ACCEPTED` означает:
+
+> CDEK принял запрос на удаление.
+
+Это **не означает**, что заказ уже удалён.
+
+Celery-задача:
+
+```
+check_cdek_order_deletion()
+```
+
+вызывает:
+
+```
+CdekStatusService.check_order_deletion()
+```
+
+который выполняет:
+
+```
+is_deleted = self.adapter.is_order_deleted(
+    cdek_uuid=cdek_delivery.cdek_uuid,
+)
+```
+
+
+### 8. Определение факта удаления
+
+Проверка выполняется через GET заказа по UUID.
+
+Если заказ ещё существует:
+
+```
+GET /orders/{uuid}
+        ↓
+заказ найден
+        ↓
+is_order_deleted() → False
+```
+
+Celery повторяет проверку через 30 секунд:
+
+```
+if result is False:
+    check_cdek_order_deletion.apply_async(
+        args=[cdek_delivery_id],
+        countdown=30,
+    )
+```
+
+Если CDEK возвращает:
+
+```
+HTTP 400
+```
+
+с ошибкой:
+
+```
+v2_entity_not_found
+```
+
+это интерпретируется как подтверждение того, что заказ удалён:
+
+```
+if any(
+    error.get("code") == "v2_entity_not_found"
+    for error in errors
+):
+    return True
+```
+
+Таким образом:
+
+```
+GET /orders/{uuid}
+       │
+       ├── заказ существует → False → повтор через 30 сек.
+       │
+       └── v2_entity_not_found → True → локальное завершение отмены
+```
+
+
+### 9. Завершение отмены локальной доставки
+
+После подтверждения фактического удаления вызывается:
+
+```
+mark_delivery_cancelled()
+```
+
+Метод выполняется внутри:
+
+```
+@transaction.atomic
+```
+
+и блокирует `CdekDelivery` через:
+
+```
+select_for_update()
+```
+
+В рамках одной транзакции выполняются следующие операции.
+
+#### 9.1. Изменение статуса OrderDelivery
+
+```
+OrderDelivery.status
+        ↓
+CANCELLED
+```
+
+#### 9.2. Изменение статуса CdekDelivery
+
+```
+CdekDelivery.order_status
+        ↓
+CANCELLED
+```
+
+При этом `CANCELLED` — внутренний статус системы, который фиксирует факт отмены локальной доставки после подтверждённого удаления заказа CDEK.
+
+#### 9.3. Возврат товара на склад
+
+Товар возвращается на склад только если ранее он был подтверждён:
+
+```
+StockReservationStatus.CONFIRMED
+```
+
+Для защиты от параллельных изменений товары блокируются через:
+
+```
+StockService.lock_products()
+```
+
+После этого количество товара увеличивается:
+
+```
+StockService.increase()
+```
+
+и:
+
+```
+stock_status
+    CONFIRMED
+        ↓
+    RELEASED
+```
+
+`RELEASED` означает, что резерв товара снят и товар снова доступен на складе.
+
+#### 9.4. Запись истории
+
+В `CdekDeliveryStatusHistory` создаётся запись:
+
+```
+status_code = CANCELLED
+status_name = Заказ CDEK отменён
+is_deleted = True
+```
+
+Повторная запись не создаётся благодаря проверке существующей истории.
+
+#### 9.5. Пересчёт статуса Order
+
+После изменения `OrderDelivery` вызывается:
+
+```
+OrderStatusService.update_order_status()
+```
+
+и агрегированный статус `Order` пересчитывается на основании статусов всех его `OrderDelivery`.
+
+
+### 10. Идемпотентность
+
+Обработка удаления рассчитана на повторный запуск.
+
+В `mark_delivery_cancelled()` проверяется уже обработанное состояние:
+
+```
+if (
+    order_delivery.status == OrderDeliveryStatus.CANCELLED
+    and cdek_delivery.stock_status == StockReservationStatus.RELEASED
+):
+    return
+```
+
+Это защищает от повторного:
+
+- возврата товара на склад;
+- изменения статусов;
+- создания истории отмены;
+- пересчёта заказа.
+
+Дополнительно возврат товара выполняется только при:
+
+```
+CONFIRMED → RELEASED
+```
+
+поэтому повторная обработка не увеличивает остаток товара несколько раз.
+
+### 11. Защита от параллельного polling создания заказа
+
+После регистрации заказа CDEK существует отдельная задача:
+
+```
+check_cdek_order_status
+```
+
+которая проверяет завершение регистрации CDEK.
+
+После начала удаления эта задача больше не должна продолжать обработку отменённой доставки.
+
+Поэтому перед выполнением polling проверяется:
+
+```
+if cdek_delivery.order_delivery.status == OrderDeliveryStatus.CANCELLED:
+    return
+```
+
+Дополнительно `save_statuses()` не позволяет последнему статусу CDEK перезаписать уже установленный внутренний статус:
+
+```
+if cdek_delivery.order_status == "CANCELLED":
+    return
+```
+
+Это предотвращает ситуацию, когда ранее запущенная задача получает старый статус CDEK, например `CREATED`, уже после завершения локальной отмены.
+
+
+### Итоговый жизненный цикл
+
+```
+POST /delivery/cdek/delete/
+            │
+            ▼
+      CDEK DELETE API
+            │
+            ▼
+      HTTP 202 ACCEPTED
+            │
+            ├── CdekRequestLog
+            │
+            └── Kafka
+                  │
+                  ▼
+       cdek.order.delete.accepted
+                  │
+                  ▼
+          Kafka Consumer
+                  │
+                  ▼
+       Celery: check_cdek_order_deletion
+                  │
+                  ▼
+       GET /orders/{uuid}
+                  │
+          ┌───────┴────────┐
+          │                │
+      найден          v2_entity_not_found
+          │                │
+       retry 30s           ▼
+                       CANCELLED
+                           │
+             ┌─────────────┼─────────────┐
+             ▼             ▼             ▼
+       OrderDelivery   Stock        StatusHistory
+        CANCELLED      RELEASED       CANCELLED
+             │
+             ▼
+       OrderStatusService
+             │
+             ▼
+        Order.status
+```
+
+**Главный принцип архитектуры:** HTTP-запрос только инициирует удаление в CDEK. Фактическое завершение операции определяется отдельным асинхронным процессом через **Kafka → Celery → polling CDEK**, после чего локальное состояние доставки, резерв товара и агрегированный статус заказа переводятся в согласованное состояние.
+
+
+## Архитектура регистрации клиентского возврата.
+
+```
+OrderDelivery
+      │
+      ├── CdekDelivery
+      │
+      └── ReturnRequest
+               │
+               └── CdekReturn
+```
+
+Жизненный цикл:
+
+```
+┌──────────────────┐
+│  OrderDelivery   │
+└────────┬─────────┘
+         │
+         │ CDEK
+         ↓
+     Доставлен
+         │
+         ↓
+┌──────────────────┐
+│  ReturnRequest   │
+│   REQUESTED      │ ← создаёт покупатель
+└────────┬─────────┘
+         │
+         ↓
+┌──────────────────┐
+│     Продавец     │
+│   рассматривает  │
+└────────┬─────────┘
+         │
+      APPROVED
+         │
+         ↓
+┌──────────────────┐
+│    CdekReturn    │
+│   регистрация    │
+└────────┬─────────┘
+         │
+         ↓
+     CDEK API
+         │
+         │ state=ACCEPTED
+         ↓
+┌──────────────────┐
+│   Kafka Event    │
+│ client-return    │
+│    .accepted     │
+└────────┬─────────┘
+         │
+         ↓
+      Celery
+         │
+         ↓
+  проверка статуса
+```
+
+### 1. Создание заявки покупателем
+
+```
+User
+ │
+ │ POST /return-requests/
+ ▼
+RolePermission
+ │
+ └── User имеет create_permission
+     для ReturnRequest
+          │
+          ▼
+ReturnRequestCreateView
+          │
+          ▼
+ReturnRequestService.create()
+          │
+          ├── OrderDelivery существует?
+          │
+          ├── OrderDelivery принадлежит request.user?
+          │
+          ├── status == DELIVERED?
+          │
+          ▼
+ReturnRequest
+status = REQUESTED
+owner = request.user
+```
+
+Для создания заявки используется:
+
+```
+class ReturnRequestCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReturnRequest
+        fields = (
+            "order_delivery",
+            "reason",
+        )
+
+    order_delivery = serializers.PrimaryKeyRelatedField(
+        queryset=OrderDelivery.objects.all(),
+    )
+```
+
+`PrimaryKeyRelatedField` преобразует переданный `order_delivery` ID в объект `OrderDelivery`. Поэтому сервис получает уже объект доставки.
+
+### 2. Рассмотрение заявки продавцом
+
+После создания:
+
+```
+ReturnRequest
+status = REQUESTED
+```
+
+заявка доступна продавцу магазина, которому принадлежит `OrderDelivery`.
+
+RBAC:
+
+```
+Seller
+ │
+ └── ReturnRequest
+      ├── read_permission = True
+      └── update_permission = True
+```
+
+Покупатель:
+
+```
+User
+ │
+ └── ReturnRequest
+      ├── read_permission = True
+      └── create_permission = True
+```
+
+Покупатель не получает `update_permission`, поэтому изменить заявку не может.
+
+Продавец может выполнить:
+
+```
+PATCH /return-requests/shop/{id}/
+```
+
+и изменить:
+
+```
+REQUESTED → APPROVED
+```
+
+или:
+
+```
+REQUESTED → REJECTED
+```
+
+Для `REJECTED` обязательна причина отказа.
+
+После `APPROVED` или `REJECTED` заявка становится окончательной и больше не изменяется.
+
+### 3. Регистрация клиентского возврата в CDEK
+
+После одобрения заявки вызывается:
+
+```
+POST /return-requests/{id}/cdek-return/
+```
+
+Поток:
+
+```
+Client
+ │
+ │ POST /return-requests/{id}/cdek-return/
+ ▼
+CDEKClientReturnCreateView
+ │
+ │ RolePermission
+ │ business_element = ReturnRequest
+ ▼
+CDEKOrderService.create_client_return()
+```
+
+Сервис проверяет:
+
+```
+ReturnRequest существует
+        │
+        ├── status == APPROVED?
+        │
+        ├── CdekReturn ещё не создан?
+        │
+        ├── CdekDelivery существует?
+        │
+        └── CdekDelivery.cdek_uuid существует?
+```
+
+После проверок вызывается адаптер:
+
+```
+response = self.adapter.create_client_return(
+    cdek_uuid=cdek_delivery.cdek_uuid,
+    tariff_code=tariff_code,
+)
+```
+
+
+### 4. Адаптер CDEK
+
+`CDEKAdapter.create_client_return()` отвечает за взаимодействие с CDEK API.
+
+```
+CDEKOrderService
+       │
+       ▼
+CDEKAdapter
+       │
+       ▼
+CDEKClient
+       │
+       ▼
+POST ORDER_CLIENT_RETURN
+```
+
+Адаптер передаёт:
+
+```
+{
+    "tariff_code": 137
+}
+```
+
+для исходного заказа CDEK:
+
+```
+/{uuid}/return
+```
+
+
+### 5. Обработка ошибок CDEK
+
+Транспортные HTTP-ошибки сначала преобразуются клиентом в:
+
+```
+CDEKApiError
+```
+
+Если ответ CDEK содержит структурированную бизнес-ошибку:
+
+```
+state = INVALID
+```
+
+и:
+
+```
+errors[].code
+errors[].message
+```
+
+адаптер преобразует её в:
+
+```
+CDEKBusinessError
+```
+
+Например:
+
+```
+CDEK business error
+operation=create_client_return
+code=order_status_not_delivery
+message=
+"Заказ из которого создается клиентский возврат еще не был вручен"
+```
+
+В таком случае:
+
+```
+CdekReturn не создаётся
+Kafka event не отправляется
+Celery не запускается
+```
+
+
+### 6. Логирование ответа CDEK
+
+После успешного ответа CDEK вызывается:
+
+```
+self.request_log_service.save_create_client_return_response(
+    cdek_delivery=cdek_delivery,
+    response=response,
+)
+```
+
+Сервис логирования сохраняет:
+
+```
+CdekRequestLog
+    │
+    ├── cdek_delivery
+    ├── cdek_uuid
+    ├── request_type
+    ├── state
+    ├── date_time
+    ├── error_code
+    ├── error_message
+    └── response_data
+```
+
+Для успешной регистрации пример записи:
+
+```
+request_type = CREATE_CLIENT_RETURN
+state = ACCEPTED
+error_code = None
+error_message = None
+```
+
+В `response_data` сохраняется полный ответ CDEK.
+
+
+### 7. Создание `CdekReturn`
+
+После получения успешного ответа определяется запрос:
+
+```
+request = next(
+    (
+        request
+        for request in response.requests
+        if request.type == "CREATE_CLIENT_RETURN"
+    ),
+    None,
+)
+```
+
+После этого создаётся техническая запись:
+
+```
+CdekReturn.objects.create(
+    return_request=return_request,
+    cdek_delivery=cdek_delivery,
+    cdek_uuid=response.entity.uuid,
+    tariff_code=tariff_code,
+    request_state=request.state,
+)
+```
+
+Таким образом:
+
+```
+ReturnRequest
+      │
+      └── OneToOne
+             │
+             ▼
+        CdekReturn
+```
+
+`CdekReturn` хранит данные, необходимые для дальнейшей работы с возвратом CDEK:
+
+```
+return_request
+cdek_delivery
+cdek_uuid
+tariff_code
+request_state
+cdek_status_code
+cdek_status_name
+```
+
+При регистрации:
+
+```
+request_state = ACCEPTED
+```
+
+Это состояние именно операции регистрации запроса CDEK.
+
+
+### 8. Kafka
+
+Если CDEK вернул:
+
+```
+request.state == "ACCEPTED"
+```
+
+создаётся событие:
+
+```
+CDEKClientReturnAcceptedEvent(
+    cdek_return_id=cdek_return.id,
+    cdek_uuid=str(cdek_return.cdek_uuid),
+)
+```
+
+и отправляется:
+
+```
+KafkaTopic.CDEK_CLIENT_RETURN_ACCEPTED
+```
+
+Topic:
+
+```
+cdek.client-return.accepted
+```
+
+Поток:
+
+```
+CdekOrderService
+      │
+      ▼
+KafkaProducer
+      │
+      ▼
+cdek.client-return.accepted
+```
+
+### 9. Kafka Consumer → Celery
+
+`KafkaConsumer` подписан на:
+
+```
+KafkaTopic.CDEK_CLIENT_RETURN_ACCEPTED
+```
+
+После получения сообщения:
+
+```
+check_cdek_client_return_status.apply_async(
+    args=[
+        data["cdek_return_id"],
+    ],
+    countdown=30,
+)
+```
+
+Таким образом Kafka не выполняет саму проверку CDEK, а только передаёт событие следующему этапу.
+
+```
+Kafka
+  │
+  │ cdek.client-return.accepted
+  ▼
+KafkaConsumer
+  │
+  ▼
+Celery
+  │
+  ▼
+check_cdek_client_return_status
+```
+
+### 10. Общая схема взаимодействия
+
+```
+┌──────────┐
+│   User   │
+└────┬─────┘
+     │
+     │ POST /return-requests/
+     ▼
+┌──────────────────────┐
+│ ReturnRequestService  │
+└──────────┬───────────┘
+           │
+           ▼
+    ReturnRequest
+       REQUESTED
+           │
+           │ PATCH продавцом
+           ▼
+       APPROVED
+           │
+           │ POST
+           ▼
+┌──────────────────────┐
+│ CDEKOrderService      │
+│ create_client_return │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│    CDEKAdapter        │
+│ create_client_return  │
+└──────────┬───────────┘
+           │
+           ▼
+        CDEK API
+           │
+      ┌────┴─────┐
+      │           │
+   INVALID     ACCEPTED
+      │           │
+      ▼           ▼
+CDEKBusiness   CdekRequestLog
+Error              │
+                    ▼
+               CdekReturn
+                    │
+                    ▼
+                 Kafka
+                    │
+                    ▼
+               Celery task
+                    │
+                    ▼
+             проверка CDEK
+```
+
+### 11. Ответственность компонентов
+
+```
+ReturnRequest
+    Бизнес-заявка покупателя на возврат.
+
+CdekDelivery
+    Техническая информация об исходной доставке CDEK.
+
+CdekReturn
+    Техническая информация о зарегистрированном
+    клиентском возврате в CDEK.
+
+ReturnRequestService
+    Создание заявки покупателем и проверка
+    принадлежности заказа.
+
+CDEKOrderService
+    Оркестрация регистрации клиентского возврата.
+
+CDEKAdapter
+    Вызов API CDEK и преобразование ошибок
+    внешней системы в CDEKBusinessError.
+
+CdekRequestLogService
+    Сохранение ответов и ошибок CDEK.
+
+KafkaProducer
+    Передача события о принятом CDEK-запросе.
+
+KafkaConsumer
+    Получение события и запуск Celery.
+
+Celery
+    Асинхронная последующая обработка
+    клиентского возврата.
+```
